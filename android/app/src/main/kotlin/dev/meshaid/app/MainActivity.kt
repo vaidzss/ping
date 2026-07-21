@@ -77,6 +77,7 @@ private val Slate = Color(0xFF77828C) // secondary text
 private val MeshGreen = Color(0xFF62D98A) // mesh status · verified traffic
 private val DmCyan = Color(0xFF57C7E3) // encrypted direct messages
 private val RescueOrange = Color(0xFFFF5A2D) // SOS. Nothing else is orange.
+private val SystemAmber = Color(0xFFE0A800) // app-generated notices — never sent over the mesh
 
 private val Mono = FontFamily.Monospace
 
@@ -364,6 +365,7 @@ private fun TransmissionLog(messages: List<MeshRepository.ChatMessage>, modifier
 @Composable
 private fun LogEntry(msg: MeshRepository.ChatMessage) {
     val rule = when {
+        msg.system -> SystemAmber
         msg.isSos -> RescueOrange
         msg.direct -> DmCyan
         msg.mine -> Slate
@@ -372,7 +374,7 @@ private fun LogEntry(msg: MeshRepository.ChatMessage) {
     val time = remember(msg.timestampMs) {
         SimpleDateFormat("HH:mm", Locale.US).format(Date(msg.timestampMs))
     }
-    val sender = if (msg.mine) "YOU" else MeshRepository.displayName(msg.fromId).uppercase()
+    val sender = if (msg.system) "MESHAID" else if (msg.mine) "YOU" else MeshRepository.displayName(msg.fromId).uppercase()
     val marks = buildString {
         if (msg.direct) append("  DM")
         if (msg.verified && !msg.mine) append("  ✓")
@@ -393,6 +395,7 @@ private fun LogEntry(msg: MeshRepository.ChatMessage) {
                 Text(
                     sender + marks,
                     color = when {
+                        msg.system -> SystemAmber
                         msg.isSos -> RescueOrange
                         msg.direct -> DmCyan
                         msg.mine -> Slate

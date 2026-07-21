@@ -21,6 +21,8 @@ object MeshRepository {
         val verified: Boolean = false,
         /** Encrypted 1:1 message. */
         val direct: Boolean = false,
+        /** App-generated notice (e.g. "no peer named X") — never sent over the mesh. */
+        val system: Boolean = false,
     )
 
     data class PeerInfo(

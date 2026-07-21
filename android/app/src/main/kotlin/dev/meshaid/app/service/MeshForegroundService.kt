@@ -113,6 +113,17 @@ class MeshForegroundService : Service() {
             node.sendPresence(displayName())
             node.sendAnnounce(displayName())
         }
+        node.onDeliveryDropped = { packet, reason ->
+            MeshRepository.addMessage(
+                MeshRepository.ChatMessage(
+                    fromId = "system",
+                    text = "DROPPED ${packet.type} from ${MeshRepository.displayName(packet.senderId.toString())}: $reason",
+                    timestampMs = System.currentTimeMillis(),
+                    mine = false,
+                    system = true,
+                ),
+            )
+        }
         node.onMediaOffer = { offer, _ -> offer.totalSize <= MeshNode.MAX_AUTO_FETCH_BYTES }
         node.onMediaReceived = { hashHex, mimeTag, from ->
             if (mimeTag == MimeTag.JPEG || mimeTag == MimeTag.PNG) {
@@ -192,10 +203,11 @@ class MeshForegroundService : Service() {
                 MeshRepository.addMessage(
                     MeshRepository.ChatMessage(
                         fromId = "system",
-                        text = if (match == null) "No peer named \"$target\". $hint"
+                        text = if (match == null) "DM NOT SENT — no peer named \"$target\". $hint"
                         else "Usage: @name message",
                         timestampMs = System.currentTimeMillis(),
                         mine = false,
+                        system = true,
                     ),
                 )
                 return
