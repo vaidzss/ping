@@ -17,6 +17,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -132,32 +133,83 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+private enum class Tab { SIGNALS, ROSTER }
+
 @Composable
 fun MeshScreen(onPickPhoto: () -> Unit) {
     val messages by MeshRepository.messages.collectAsState()
     val running by MeshRepository.meshRunning.collectAsState()
     var draft by remember { mutableStateOf("") }
+    var tab by remember { mutableStateOf(Tab.SIGNALS) }
 
     Column(modifier = Modifier.fillMaxSize().background(Night)) {
         InstrumentPanel()
-        TransmissionLog(
-            messages = messages,
-            modifier = Modifier.weight(1f).fillMaxWidth(),
-        )
-        Composer(
-            draft = draft,
-            onDraftChange = { draft = it },
-            onPickPhoto = onPickPhoto,
-            onSend = {
-                val text = draft.trim()
-                if (text.isNotEmpty()) {
-                    MeshForegroundService.instance?.sendChat(text)
-                    draft = ""
-                }
-            },
-            enabled = running,
-        )
+        TabBar(tab, onSelect = { tab = it })
+        when (tab) {
+            Tab.SIGNALS -> {
+                TransmissionLog(
+                    messages = messages,
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                )
+                Composer(
+                    draft = draft,
+                    onDraftChange = { draft = it },
+                    onPickPhoto = onPickPhoto,
+                    onSend = {
+                        val text = draft.trim()
+                        if (text.isNotEmpty()) {
+                            MeshForegroundService.instance?.sendChat(text)
+                            draft = ""
+                        }
+                    },
+                    enabled = running,
+                )
+            }
+            Tab.ROSTER -> Roster(modifier = Modifier.weight(1f).fillMaxWidth())
+        }
         SosBar(enabled = running)
+    }
+}
+
+@Composable
+private fun TabBar(selected: Tab, onSelect: (Tab) -> Unit) {
+    val peers by MeshRepository.peers.collectAsState()
+    val liveCount = peers.values.count { it.name != null }
+    Row(modifier = Modifier.fillMaxWidth().background(Night)) {
+        TabButton("SIGNALS", selected == Tab.SIGNALS, Modifier.weight(1f)) { onSelect(Tab.SIGNALS) }
+        TabButton(
+            if (liveCount > 0) "ROSTER ($liveCount)" else "ROSTER",
+            selected == Tab.ROSTER,
+            Modifier.weight(1f),
+        ) { onSelect(Tab.ROSTER) }
+    }
+    HairLine()
+}
+
+@Composable
+private fun TabButton(label: String, active: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    Column(
+        modifier = modifier
+            .background(if (active) Panel else Night)
+            .clickable(onClick = onClick)
+            .padding(vertical = 11.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            label,
+            color = if (active) Chalk else Slate,
+            fontFamily = Mono,
+            fontSize = 12.sp,
+            fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
+            letterSpacing = 1.5.sp,
+        )
+        Spacer(Modifier.height(6.dp))
+        Box(
+            Modifier
+                .height(2.dp)
+                .width(28.dp)
+                .background(if (active) MeshGreen else Color.Transparent),
+        )
     }
 }
 
@@ -465,6 +517,93 @@ private fun SosBar(enabled: Boolean) {
             letterSpacing = 2.sp,
         )
     }
+}
+
+// ---------------------------------------------------------------------------- roster
+// Everyone the mesh has heard from, freshest first. Uses the presence + GPS data already
+// flowing; exercise it from the laptop with `/loc <lat> <lon>`.
+
+@Composable
+private fun Roster(modifier: Modifier = Modifier) {
+    val peers by MeshRepository.peers.collectAsState()
+    val self by MeshRepository.selfLocation.collectAsState()
+    val now = System.currentTimeMillis()
+    val roster = peers.values.filter { it.name != null }.sortedByDescending { it.lastSeenMs }
+
+    if (roster.isEmpty()) {
+        Box(modifier = modifier, contentAlignment = Alignment.Center) {
+            Text(
+                "NO ONE ON THE MESH YET",
+                color = Slate,
+                fontFamily = Mono,
+                fontSize = 12.sp,
+                letterSpacing = 2.sp,
+            )
+        }
+        return
+    }
+    LazyColumn(modifier = modifier, contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 6.dp)) {
+        items(roster) { peer -> RosterRow(peer, self, now) }
+    }
+}
+
+@Composable
+private fun RosterRow(peer: MeshRepository.PeerInfo, self: Pair<Double, Double>?, now: Long) {
+    val ageSec = ((now - peer.lastSeenMs) / 1000).coerceAtLeast(0)
+    val fresh = ageSec < 40 // within the presence-expiry window
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(8.dp).background(if (fresh) MeshGreen else Slate, CircleShape))
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    peer.name!!.uppercase(),
+                    color = Chalk,
+                    fontFamily = Mono,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.sp,
+                )
+                if (peer.verified) {
+                    Spacer(Modifier.width(8.dp))
+                    Text("✓ VERIFIED", color = MeshGreen, fontFamily = Mono, fontSize = 10.sp, letterSpacing = 1.sp)
+                }
+            }
+            val locLine = when {
+                peer.lat != null && peer.lon != null && self != null -> {
+                    val km = haversineKm(self.first, self.second, peer.lat, peer.lon)
+                    "%.5f, %.5f  ·  %s away".format(peer.lat, peer.lon, formatDistance(km))
+                }
+                peer.lat != null && peer.lon != null -> "%.5f, %.5f".format(peer.lat, peer.lon)
+                else -> "location unknown"
+            }
+            Spacer(Modifier.height(2.dp))
+            Text(locLine, color = Slate, fontFamily = Mono, fontSize = 11.sp)
+        }
+        Text(
+            if (ageSec < 5) "now" else if (ageSec < 90) "${ageSec}s ago" else "${ageSec / 60}m ago",
+            color = if (fresh) Slate else Slate.copy(alpha = 0.6f),
+            fontFamily = Mono,
+            fontSize = 11.sp,
+        )
+    }
+    HairLine()
+}
+
+private fun formatDistance(km: Double): String =
+    if (km < 1.0) "${(km * 1000).toInt()} m" else "%.1f km".format(km)
+
+private fun haversineKm(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+    val r = 6371.0
+    val dLat = Math.toRadians(lat2 - lat1)
+    val dLon = Math.toRadians(lon2 - lon1)
+    val a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) *
+        Math.sin(dLon / 2) * Math.sin(dLon / 2)
+    return r * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
 }
 
 @Composable

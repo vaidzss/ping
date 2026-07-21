@@ -29,6 +29,7 @@ object MeshRepository {
         val lat: Double? = null,
         val lon: Double? = null,
         val lastSeenMs: Long = 0,
+        val verified: Boolean = false,
     )
 
     private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
@@ -56,6 +57,13 @@ object MeshRepository {
 
     fun setCarryingCount(count: Int) {
         _carryingCount.value = count
+    }
+
+    private val _selfLocation = MutableStateFlow<Pair<Double, Double>?>(null)
+    val selfLocation: StateFlow<Pair<Double, Double>?> = _selfLocation.asStateFlow()
+
+    fun setSelfLocation(lat: Double, lon: Double) {
+        _selfLocation.value = lat to lon
     }
 
     fun addMessage(message: ChatMessage) {

@@ -103,7 +103,10 @@ class MeshForegroundService : Service() {
         )
         node.onMessage = ::onPacket
         node.onPeerPresence = { peer, name ->
-            MeshRepository.updatePeer(peer.toString()) { it.copy(name = name, lastSeenMs = System.currentTimeMillis()) }
+            val known = node.directory.get(peer) != null
+            MeshRepository.updatePeer(peer.toString()) {
+                it.copy(name = name, lastSeenMs = System.currentTimeMillis(), verified = known)
+            }
         }
         node.onNeighborUp = {
             // Answer a new link instantly so keys are shared before the user can DM.
@@ -151,6 +154,7 @@ class MeshForegroundService : Service() {
             while (true) {
                 delay(BEACON_INTERVAL_MS)
                 bestEffortBeacon().takeIf { it.latE7 != 0 || it.lonE7 != 0 }?.let {
+                    MeshRepository.setSelfLocation(it.lat, it.lon)
                     node.send(PacketType.GPS_BEACON, it.encode())
                 }
             }
