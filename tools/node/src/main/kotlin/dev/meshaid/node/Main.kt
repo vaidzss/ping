@@ -75,7 +75,8 @@ fun main(args: Array<String>) {
     }
     node.onPeerPresence = { peer, peerName ->
         if (names.put(peer.toString(), peerName) != peerName) {
-            println("\n* $peerName joined the mesh ($peer)")
+            val keyed = if (node.directory.get(peer) != null) " [keys known - DM ready]" else " [name only]"
+            println("\n* $peerName joined the mesh ($peer)$keyed")
             print("> ")
         }
     }
@@ -83,6 +84,10 @@ fun main(args: Array<String>) {
         // Answer a new link immediately so key exchange doesn't wait for the heartbeat.
         node.sendPresence(name)
         node.sendAnnounce(name)
+    }
+    node.onDeliveryDropped = { packet, reason ->
+        println("\n* DROPPED ${packet.type} from ${label(packet.senderId)}: $reason")
+        print("> ")
     }
     node.onMediaOffer = { offer, from ->
         println("\n* incoming media from ${label(from)} (${offer.totalSize / 1024} KB) — fetching…")
@@ -125,7 +130,14 @@ fun main(args: Array<String>) {
                 exitProcess(0)
             }
             input == "/peers" -> {
-                println("direct links: ${transport.peerCount()}, known names: ${names.values.joinToString().ifEmpty { "none yet" }}")
+                println("direct links: ${transport.peerCount()}")
+                val known = node.directory.knownNames()
+                if (known.isEmpty()) {
+                    println("directory: empty (no identities learned yet)")
+                } else {
+                    println("directory (can DM these):")
+                    known.forEach { (id, n) -> println("  $n  ($id)") }
+                }
             }
             input.startsWith("/sos") -> {
                 val note = input.removePrefix("/sos").trim().ifEmpty { "Emergency — need help" }

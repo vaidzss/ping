@@ -85,6 +85,9 @@ class MeshNode(
     /** A fetched blob passed hash verification and is now in the blob store. */
     var onMediaReceived: ((hashHex: String, mimeTag: Int, from: NodeId) -> Unit)? = null
 
+    /** Diagnostics: an incoming CHAT/SOS was dropped before delivery, with the reason. */
+    var onDeliveryDropped: ((Packet, String) -> Unit)? = null
+
     private val presenceSeen = HashMap<NodeId, Long>()
     private val lastSync = HashMap<NodeId, Long>()
     private val incoming = HashMap<String, Pair<IncomingTransfer, NodeId>>()
@@ -241,7 +244,8 @@ class MeshNode(
             val keys = directory.get(packet.senderId)
             if (keys != null) {
                 if (!Identity.verify(keys.signingPublic, PacketCodec.signingBytes(packet), signature)) {
-                    return // invalid signature from a known key: forged packet, drop it
+                    onDeliveryDropped?.invoke(packet, "signature invalid for known key")
+                    return // forged packet
                 }
                 verified = true
             }
@@ -249,12 +253,20 @@ class MeshNode(
         var payload = packet.payload
         var direct = false
         if (packet.encrypted) {
-            if (packet.recipientId != selfId) return // sealed for someone else; nothing to show
-            val self = identity ?: return
+            if (packet.recipientId != selfId) {
+                onDeliveryDropped?.invoke(packet, "encrypted for ${packet.recipientId}, not us")
+                return
+            }
+            val self = identity
+            if (self == null) {
+                onDeliveryDropped?.invoke(packet, "encrypted but this node has no identity")
+                return
+            }
             payload = try {
                 SealedBox.open(self, packet.payload)
             } catch (_: Exception) {
-                return // not openable by us: damaged or misaddressed
+                onDeliveryDropped?.invoke(packet, "sealed box would not open (wrong key?)")
+                return
             }
             direct = true
         }

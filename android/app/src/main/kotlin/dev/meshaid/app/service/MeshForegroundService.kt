@@ -186,10 +186,13 @@ class MeshForegroundService : Service() {
             val body = if (space > 1) text.substring(space + 1).trim() else ""
             val match = node.directory.byName(target)
             if (match == null || body.isEmpty()) {
+                val known = node.directory.knownNames().values
+                val hint = if (known.isEmpty()) "No identities learned yet — wait for a peer to appear."
+                else "Known peers you can DM: ${known.joinToString(", ")}"
                 MeshRepository.addMessage(
                     MeshRepository.ChatMessage(
                         fromId = "system",
-                        text = if (match == null) "No peer named \"$target\" known yet — DMs need their presence first."
+                        text = if (match == null) "No peer named \"$target\". $hint"
                         else "Usage: @name message",
                         timestampMs = System.currentTimeMillis(),
                         mine = false,
