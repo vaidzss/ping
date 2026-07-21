@@ -13,7 +13,9 @@ reporting & legal-aid tier) and [protocol/SPEC.md](protocol/SPEC.md) for the wir
   DTN outbox, identity/crypto, content-addressed blob store. Heavily unit-tested.
 - `tools/simulator/` — JVM mesh simulator: runs dozens of virtual nodes through churn,
   partition, and dense-crowd scenarios as JUnit tests.
-- `android/app/` — Android app: BLE transport, foreground mesh service, Compose UI.
+- `tools/node/` — desktop mesh node (LAN lane): lets a laptop join the mesh, so the app
+  can be tested with a single phone. See [docs/TESTING.md](docs/TESTING.md).
+- `android/app/` — Android app: BLE + LAN transports, foreground mesh service, Compose UI.
 
 ## Build
 

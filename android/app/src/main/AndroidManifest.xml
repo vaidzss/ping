@@ -24,6 +24,11 @@
         android:usesPermissionFlags="neverForLocation"
         tools:targetApi="tiramisu" />
 
+    <!-- LAN lane: multicast discovery on hotspot/Wi-Fi (still zero internet) -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+
     <!-- Always-on mesh relay -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />

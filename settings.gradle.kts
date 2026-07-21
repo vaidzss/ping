@@ -24,4 +24,5 @@ rootProject.name = "meshaid"
 
 include(":core")
 include(":tools:simulator")
+include(":tools:node")
 include(":android:app")

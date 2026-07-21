@@ -11,6 +11,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.location.LocationManager
 import android.net.Uri
+import android.net.wifi.WifiManager
 import android.os.BatteryManager
 import android.os.Build
 import android.os.IBinder
@@ -24,6 +25,8 @@ import dev.meshaid.core.media.MimeTag
 import dev.meshaid.core.protocol.GpsBeacon
 import dev.meshaid.core.protocol.Packet
 import dev.meshaid.core.protocol.PacketType
+import dev.meshaid.core.transport.CompositeMeshTransport
+import dev.meshaid.core.transport.LanMeshTransport
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -56,8 +59,10 @@ class MeshForegroundService : Service() {
     }
 
     private lateinit var identity: Identity
-    private lateinit var transport: BleMeshTransport
+    private lateinit var bleLane: BleMeshTransport
+    private lateinit var lanLane: LanMeshTransport
     private lateinit var node: MeshNode
+    private var multicastLock: WifiManager.MulticastLock? = null
     lateinit var blobStore: BlobStore
         private set
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -66,12 +71,19 @@ class MeshForegroundService : Service() {
         super.onCreate()
         instance = this
         identity = IdentityStore.loadOrCreate(this)
-        transport = BleMeshTransport(this, identity.nodeId)
+        bleLane = BleMeshTransport(this, identity.nodeId)
+        lanLane = LanMeshTransport(identity.nodeId)
+        // Android filters multicast by default; without this lock LAN discovery is deaf.
+        multicastLock = (applicationContext.getSystemService(WIFI_SERVICE) as WifiManager)
+            .createMulticastLock("meshaid").apply {
+                setReferenceCounted(false)
+                acquire()
+            }
         blobStore = BlobStore(filesDir.resolve("blobs").toPath())
         node = MeshNode(
             selfId = identity.nodeId,
             clock = System::currentTimeMillis,
-            transport = transport,
+            transport = CompositeMeshTransport(listOf(bleLane, lanLane)),
             bundleStore = BundleStore(System::currentTimeMillis),
             blobStore = blobStore,
         )
@@ -101,7 +113,8 @@ class MeshForegroundService : Service() {
         scope.launch {
             while (true) {
                 node.tick()
-                MeshRepository.setPeerCount(transport.linkCount().coerceAtLeast(node.router.neighborCount()))
+                val links = bleLane.linkCount() + lanLane.peerCount()
+                MeshRepository.setPeerCount(links.coerceAtLeast(node.router.neighborCount()))
                 delay(2000)
             }
         }
@@ -127,6 +140,7 @@ class MeshForegroundService : Service() {
         MeshRepository.setMeshRunning(false)
         scope.cancel()
         node.stop()
+        runCatching { multicastLock?.release() }
         instance = null
         super.onDestroy()
     }
