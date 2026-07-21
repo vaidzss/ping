@@ -89,6 +89,10 @@ fun main(args: Array<String>) {
         println("\n* DROPPED ${packet.type} from ${label(packet.senderId)}: $reason")
         print("> ")
     }
+    node.onFrameRejected = { size, reason ->
+        println("\n* REJECTED incoming frame ($size bytes): $reason")
+        print("> ")
+    }
     node.onMediaOffer = { offer, from ->
         println("\n* incoming media from ${label(from)} (${offer.totalSize / 1024} KB) — fetching…")
         true

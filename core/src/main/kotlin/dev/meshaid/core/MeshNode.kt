@@ -88,6 +88,9 @@ class MeshNode(
     /** Diagnostics: an incoming CHAT/SOS was dropped before delivery, with the reason. */
     var onDeliveryDropped: ((Packet, String) -> Unit)? = null
 
+    /** Diagnostics: bytes arrived over a transport but could not even be decoded as a packet. */
+    var onFrameRejected: ((frameSize: Int, reason: String) -> Unit)? = null
+
     private val presenceSeen = HashMap<NodeId, Long>()
     private val lastSync = HashMap<NodeId, Long>()
     private val incoming = HashMap<String, Pair<IncomingTransfer, NodeId>>()
@@ -198,12 +201,20 @@ class MeshNode(
     private fun receiveFrame(frame: ByteArray) {
         val packet = try {
             PacketCodec.decode(frame)
-        } catch (_: ProtocolException) {
-            return // malformed frames are dropped silently; the mesh must not be crashable
-        } catch (_: IllegalArgumentException) {
+        } catch (e: ProtocolException) {
+            onFrameRejected?.invoke(frame.size, e.message ?: "malformed frame")
+            return // the mesh must not be crashable by a bad frame
+        } catch (e: IllegalArgumentException) {
+            onFrameRejected?.invoke(frame.size, e.message ?: "malformed frame")
             return
         }
         val result = router.onReceive(packet)
+        // A packet explicitly addressed to us that still wasn't delivered is always
+        // worth surfacing (duplicate/oversized/etc.) — unlike a relay-only packet meant
+        // for someone else, which legitimately skips delivery on every hop but the last.
+        if (!result.deliver && packet.recipientId == selfId) {
+            onDeliveryDropped?.invoke(packet, result.reason ?: "router did not deliver (no reason given)")
+        }
         if (result.deliver) dispatch(packet)
         result.relay?.let {
             storeAsBundle(packet)

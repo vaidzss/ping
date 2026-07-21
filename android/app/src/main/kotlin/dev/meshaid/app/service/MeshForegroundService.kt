@@ -124,6 +124,17 @@ class MeshForegroundService : Service() {
                 ),
             )
         }
+        node.onFrameRejected = { size, reason ->
+            MeshRepository.addMessage(
+                MeshRepository.ChatMessage(
+                    fromId = "system",
+                    text = "REJECTED incoming frame ($size bytes): $reason",
+                    timestampMs = System.currentTimeMillis(),
+                    mine = false,
+                    system = true,
+                ),
+            )
+        }
         node.onMediaOffer = { offer, _ -> offer.totalSize <= MeshNode.MAX_AUTO_FETCH_BYTES }
         node.onMediaReceived = { hashHex, mimeTag, from ->
             if (mimeTag == MimeTag.JPEG || mimeTag == MimeTag.PNG) {
