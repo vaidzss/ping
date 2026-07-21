@@ -43,6 +43,21 @@ object MeshRepository {
     private val _meshRunning = MutableStateFlow(false)
     val meshRunning: StateFlow<Boolean> = _meshRunning.asStateFlow()
 
+    private val _selfCallsign = MutableStateFlow("—")
+    val selfCallsign: StateFlow<String> = _selfCallsign.asStateFlow()
+
+    /** Bundles this phone is carrying for other people (the data-mule stat). */
+    private val _carryingCount = MutableStateFlow(0)
+    val carryingCount: StateFlow<Int> = _carryingCount.asStateFlow()
+
+    fun setSelfCallsign(name: String) {
+        _selfCallsign.value = name
+    }
+
+    fun setCarryingCount(count: Int) {
+        _carryingCount.value = count
+    }
+
     fun addMessage(message: ChatMessage) {
         _messages.value = _messages.value + message
     }

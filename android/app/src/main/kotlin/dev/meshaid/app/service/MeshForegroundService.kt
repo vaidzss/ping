@@ -64,6 +64,7 @@ class MeshForegroundService : Service() {
     private lateinit var lanLane: LanMeshTransport
     private lateinit var node: MeshNode
     private var multicastLock: WifiManager.MulticastLock? = null
+    private lateinit var bundleStore: BundleStore
     private lateinit var messageLog: MessageLog
     lateinit var blobStore: BlobStore
         private set
@@ -89,11 +90,14 @@ class MeshForegroundService : Service() {
         blobStore = BlobStore(filesDir.resolve("blobs").toPath())
         messageLog = MessageLog(filesDir.resolve("messages.jsonl"))
         MeshRepository.seedHistory(messageLog.load())
+        MeshRepository.setSelfCallsign(displayName())
+        val bundles = BundleStore(System::currentTimeMillis)
+        bundleStore = bundles
         node = MeshNode(
             selfId = identity.nodeId,
             clock = System::currentTimeMillis,
             transport = CompositeMeshTransport(listOf(bleLane, lanLane)),
-            bundleStore = BundleStore(System::currentTimeMillis),
+            bundleStore = bundles,
             blobStore = blobStore,
             identity = identity,
         )
@@ -125,6 +129,7 @@ class MeshForegroundService : Service() {
                 node.tick()
                 val links = bleLane.linkCount() + lanLane.peerCount()
                 MeshRepository.setPeerCount(links.coerceAtLeast(node.router.neighborCount()))
+                MeshRepository.setCarryingCount(bundleStore.size())
                 delay(2000)
             }
         }

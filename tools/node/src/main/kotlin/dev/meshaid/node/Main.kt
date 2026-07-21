@@ -48,9 +48,10 @@ fun main(args: Array<String>) {
     node.onMessage = { message ->
         val packet = message.packet
         val payload = message.payload
+        // ASCII only: Windows consoles often aren't UTF-8 and garble fancy glyphs.
         val tag = buildString {
             if (message.direct) append(" [encrypted DM]")
-            if (message.verified) append(" ✓")
+            if (message.verified) append(" [verified]")
         }
         when (packet.type) {
             PacketType.CHAT -> println("\n[${label(packet.senderId)}]$tag ${String(payload)}")
@@ -94,7 +95,7 @@ fun main(args: Array<String>) {
     }
 
     node.start()
-    println("MeshAid node '$name' up — id ${identity.nodeId}, LAN port ${transport.port}")
+    println("MeshAid node '$name' up - id ${identity.nodeId}, LAN port ${transport.port}")
     println("Join the phone's hotspot (or same Wi-Fi).")
     println("Commands: @name <msg> (encrypted DM), /sos <note>, /photo <path>, /loc <lat> <lon>, /peers, /quit")
 
