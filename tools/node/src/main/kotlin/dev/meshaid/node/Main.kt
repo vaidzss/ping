@@ -96,6 +96,7 @@ fun main(args: Array<String>) {
 
     node.start()
     println("MeshAid node '$name' up - id ${identity.nodeId}, LAN port ${transport.port}")
+    println("Local addresses: ${transport.localAddresses().joinToString().ifEmpty { "NONE - not connected to any network?" }}")
     println("Join the phone's hotspot (or same Wi-Fi).")
     println("Commands: @name <msg> (encrypted DM), /sos <note>, /photo <path>, /loc <lat> <lon>, /peers, /quit")
 
