@@ -72,6 +72,13 @@ class MeshNode(
     /** A direct neighbor announced itself (nodeId, displayName). */
     var onPeerPresence: ((NodeId, String) -> Unit)? = null
 
+    /**
+     * A new transport link came up. The app/CLI should answer with an immediate presence
+     * so keys are exchanged at once — otherwise a DM typed in the first few seconds fails
+     * because the recipient's keys haven't arrived on the next heartbeat yet.
+     */
+    var onNeighborUp: ((NodeId) -> Unit)? = null
+
     /** A media offer arrived. Return true to fetch the blob. */
     var onMediaOffer: ((MediaOffer, NodeId) -> Boolean)? = null
 
@@ -84,7 +91,10 @@ class MeshNode(
 
     init {
         transport.onFrame = ::receiveFrame
-        transport.onPeerConnected = ::peerUp
+        transport.onPeerConnected = {
+            peerUp(it)
+            onNeighborUp?.invoke(it)
+        }
         transport.onPeerDisconnected = { router.neighborDown(it) }
     }
 

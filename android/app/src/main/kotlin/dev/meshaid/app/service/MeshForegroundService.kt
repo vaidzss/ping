@@ -105,6 +105,11 @@ class MeshForegroundService : Service() {
         node.onPeerPresence = { peer, name ->
             MeshRepository.updatePeer(peer.toString()) { it.copy(name = name, lastSeenMs = System.currentTimeMillis()) }
         }
+        node.onNeighborUp = {
+            // Answer a new link instantly so keys are shared before the user can DM.
+            node.sendPresence(displayName())
+            node.sendAnnounce(displayName())
+        }
         node.onMediaOffer = { offer, _ -> offer.totalSize <= MeshNode.MAX_AUTO_FETCH_BYTES }
         node.onMediaReceived = { hashHex, mimeTag, from ->
             if (mimeTag == MimeTag.JPEG || mimeTag == MimeTag.PNG) {

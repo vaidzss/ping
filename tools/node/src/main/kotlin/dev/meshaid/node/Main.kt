@@ -79,6 +79,11 @@ fun main(args: Array<String>) {
             print("> ")
         }
     }
+    node.onNeighborUp = {
+        // Answer a new link immediately so key exchange doesn't wait for the heartbeat.
+        node.sendPresence(name)
+        node.sendAnnounce(name)
+    }
     node.onMediaOffer = { offer, from ->
         println("\n* incoming media from ${label(from)} (${offer.totalSize / 1024} KB) — fetching…")
         true
