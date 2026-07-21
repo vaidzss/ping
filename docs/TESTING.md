@@ -23,11 +23,17 @@ The laptop runs the same mesh core as the app, over the LAN lane.
    `* MeshAid-xxxxxx joined the mesh` and the app's peer count goes to 1.
 5. **Test everything:**
    - Type in the laptop console → appears in the app; send from the app → prints on the laptop.
+     Both directions should show **✓** (signature verified against the announced identity key).
+   - **Encrypted DM:** in the app type `@<laptop-name> hello` (the laptop prints its name at
+     startup; it also appears in the green peers strip). Laptop replies `@<your-app-name> hi`.
+     DMs show a blue bubble + 🔒 in the app, `[encrypted DM] ✓` on the laptop.
    - App **SOS** button → laptop prints `!!! SOS ... !!!` with the GPS fix.
+   - Laptop `/loc 26.9124 75.7873` → sends a synthetic GPS beacon (feeds the app's peer map).
    - App **📷** → photo lands in `%USERPROFILE%\.meshaid\received\`.
    - Laptop `/photo C:\path\to\some.jpg` → appears inline in the app chat.
    - **DTN store-carry-forward:** close the app (swipe away so the service dies), type a
-     message on the laptop, reopen the app → the message syncs over on contact.
+     message on the laptop, reopen the app → the message syncs over on contact. Chat history
+     survives the restart (persisted locally).
 
 What this validates: the full stack above the radio (protocol, routing, dedup, DTN sync,
 media pipeline, crypto identity, UI) on a real phone over a real radio (Wi-Fi). What it

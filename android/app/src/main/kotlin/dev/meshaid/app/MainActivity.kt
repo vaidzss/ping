@@ -177,7 +177,7 @@ fun MeshScreen(onPickPhoto: () -> Unit) {
                 modifier = Modifier
                     .weight(1f)
                     .padding(start = 8.dp),
-                placeholder = { Text("Message everyone nearby…") },
+                placeholder = { Text("Message all · @name for private…") },
             )
             Button(
                 onClick = {
@@ -199,6 +199,7 @@ fun MeshScreen(onPickPhoto: () -> Unit) {
 private fun MessageBubble(msg: MeshRepository.ChatMessage) {
     val bg = when {
         msg.isSos -> Color(0xFFFFCDD2)
+        msg.direct -> Color(0xFFBBDEFB) // encrypted DM
         msg.mine -> Color(0xFFC8E6C9)
         else -> Color(0xFFEEEEEE)
     }
@@ -214,8 +215,12 @@ private fun MessageBubble(msg: MeshRepository.ChatMessage) {
                 .padding(horizontal = 12.dp, vertical = 8.dp),
         ) {
             if (!msg.mine) {
+                val marks = buildString {
+                    if (msg.direct) append(" 🔒")
+                    if (msg.verified) append(" ✓")
+                }
                 Text(
-                    MeshRepository.displayName(msg.fromId),
+                    MeshRepository.displayName(msg.fromId) + marks,
                     style = MaterialTheme.typography.labelSmall,
                     color = Color(0xFF616161),
                 )

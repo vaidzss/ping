@@ -56,9 +56,19 @@ ignore trailing padding.
 - **Payload caps:** control lane rejects payloads > 4 KiB except MEDIA_CHUNK.
   Any compressed payload declares its inflated size and is rejected before decompression if it
   exceeds the cap (decompression-bomb defense).
-- **Presence:** PRESENCE is always sent with ttl = 1 (direct neighbors only, never relayed);
-  payload is the utf-8 display name. Receivers treat the sender as a direct neighbor and expire
-  it after 35 s of silence. Presence also triggers DTN sync with previously unseen peers.
+- **Presence (v2):** payload `nameLen(u8) | name | [ed25519Pub(32) | x25519Pub(32)]`.
+  ttl = 1 → direct presence: receiver registers the sender as a direct neighbor (35 s expiry)
+  and triggers DTN sync. ttl > 1 → multi-hop identity announce (keys spread across the mesh so
+  distant peers can verify signatures and seal DMs) without neighbor registration.
+  **Key binding is self-authenticating:** receivers MUST reject announcements whose signing key
+  does not hash to the sender's NodeId.
+- **Signature policy:** if a packet is signed and the sender's key is known, an invalid
+  signature drops the packet before delivery (forgery). Valid → delivered as "verified".
+  Unsigned or unknown-key packets are delivered unverified (emergency > purity), marked so.
+- **Direct messages:** CHAT with ENCRYPTED flag, recipient-addressed; payload is a sealed box
+  (ephemeral X25519 → HKDF-SHA256 → ChaCha20-Poly1305) to the recipient's announced X25519 key.
+  Relays carry the ciphertext; only the recipient can open it. No forward secrecy yet (Noise X
+  trade-off); interactive Noise XX sessions are the planned upgrade.
 
 ## Payload formats
 

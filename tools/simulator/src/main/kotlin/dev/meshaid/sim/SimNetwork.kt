@@ -1,10 +1,11 @@
 package dev.meshaid.sim
 
+import dev.meshaid.core.MeshMessage
 import dev.meshaid.core.MeshNode
 import dev.meshaid.core.blob.BlobStore
+import dev.meshaid.core.crypto.Identity
 import dev.meshaid.core.dtn.BundleStore
 import dev.meshaid.core.protocol.NodeId
-import dev.meshaid.core.protocol.Packet
 import dev.meshaid.core.transport.MeshTransport
 import java.nio.file.Files
 import kotlin.math.hypot
@@ -30,8 +31,9 @@ class SimNetwork(
 
     private class Transmission(val from: SimNode, val frame: ByteArray)
 
-    fun addNode(idRaw: Long, x: Double, y: Double): SimNode {
-        val node = SimNode(this, NodeId(idRaw), x, y)
+    /** With an [identity], the node's id derives from its keys and presence carries them. */
+    fun addNode(idRaw: Long, x: Double, y: Double, identity: Identity? = null): SimNode {
+        val node = SimNode(this, identity?.nodeId ?: NodeId(idRaw), x, y, identity)
         nodes.add(node)
         return node
     }
@@ -84,6 +86,7 @@ class SimNode(
     val id: NodeId,
     var x: Double,
     var y: Double,
+    identity: Identity? = null,
 ) {
     val transport = SimTransport(this)
     val bundleStore = BundleStore({ network.nowMs })
@@ -94,8 +97,9 @@ class SimNode(
         transport,
         bundleStore = bundleStore,
         blobStore = blobStore,
+        identity = identity,
     )
-    val received = mutableListOf<Packet>()
+    val received = mutableListOf<MeshMessage>()
     val presences = mutableListOf<Pair<NodeId, String>>()
     val mediaReceived = mutableListOf<String>()
 

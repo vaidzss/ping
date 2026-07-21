@@ -1,11 +1,11 @@
 ﻿package dev.meshaid.core.transport
 
+import dev.meshaid.core.MeshMessage
 import dev.meshaid.core.MeshNode
 import dev.meshaid.core.blob.BlobStore
 import dev.meshaid.core.dtn.BundleStore
 import dev.meshaid.core.media.MimeTag
 import dev.meshaid.core.protocol.NodeId
-import dev.meshaid.core.protocol.Packet
 import dev.meshaid.core.protocol.PacketType
 import java.nio.file.Files
 import kotlin.random.Random
@@ -47,7 +47,7 @@ class LanMeshTransportTest {
         val (nodeA, lanA, _) = node(1)
         val (nodeB, lanB, blobsB) = node(2)
 
-        val receivedAtB = mutableListOf<Packet>()
+        val receivedAtB = mutableListOf<MeshMessage>()
         val mediaAtB = mutableListOf<String>()
         nodeB.onMessage = { receivedAtB.add(it) }
         nodeB.onMediaOffer = { _, _ -> true }

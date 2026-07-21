@@ -1,6 +1,9 @@
 package dev.meshaid.core
 
 import dev.meshaid.core.blob.BlobStore
+import dev.meshaid.core.crypto.Identity
+import dev.meshaid.core.crypto.PeerDirectory
+import dev.meshaid.core.crypto.SealedBox
 import dev.meshaid.core.dtn.Bundle
 import dev.meshaid.core.dtn.BundlePriority
 import dev.meshaid.core.dtn.BundleStore
@@ -13,8 +16,22 @@ import dev.meshaid.core.protocol.NodeId
 import dev.meshaid.core.protocol.Packet
 import dev.meshaid.core.protocol.PacketCodec
 import dev.meshaid.core.protocol.PacketType
+import dev.meshaid.core.protocol.PresencePayload
 import dev.meshaid.core.protocol.ProtocolException
 import dev.meshaid.core.protocol.SummaryVector
+
+/**
+ * A delivered application message: raw packet plus the decrypted payload and the
+ * signature verdict (`true` verified, `false` unsigned-or-unknown-key, never a forgery —
+ * packets with an invalid signature from a known key are dropped before delivery).
+ */
+class MeshMessage(
+    val packet: Packet,
+    val payload: ByteArray,
+    val verified: Boolean,
+    /** True when this arrived as an encrypted direct message addressed to us. */
+    val direct: Boolean,
+)
 
 /**
  * Glue between a transport and the router: one running mesh participant.
@@ -33,6 +50,7 @@ class MeshNode(
     config: MeshConfig = MeshConfig(),
     private val bundleStore: BundleStore? = null,
     private val blobStore: BlobStore? = null,
+    private val identity: Identity? = null,
 ) {
     companion object {
         const val PRESENCE_TIMEOUT_MS = 35_000L
@@ -42,8 +60,11 @@ class MeshNode(
 
     val router = MeshRouter(selfId, clock, config)
 
+    /** Peers' announced keys+names, learned from presence (id/key binding verified). */
+    val directory = PeerDirectory()
+
     /** Delivered application messages (CHAT / SOS / GPS_BEACON). */
-    var onMessage: ((Packet) -> Unit)? = null
+    var onMessage: ((MeshMessage) -> Unit)? = null
 
     /** Diagnostics: every frame this node puts on the air (send + relay). */
     var onTransmit: ((Packet) -> Unit)? = null
@@ -81,7 +102,8 @@ class MeshNode(
         ttl: Int? = null,
     ): Packet {
         var packet = router.prepareOutbound(type, payload, recipientId, encrypted, ttl)
-        sign?.let { packet = packet.withSignature(it(PacketCodec.signingBytes(packet))) }
+        val signer = sign ?: identity?.takeIf { type == PacketType.CHAT || type == PacketType.SOS }?.let { it::sign }
+        signer?.let { packet = packet.withSignature(it(PacketCodec.signingBytes(packet))) }
         storeAsBundle(packet)
         transmit(packet)
         return packet
@@ -89,7 +111,47 @@ class MeshNode(
 
     /** Announce ourselves to direct neighbors only (TTL 1 — never relayed). */
     fun sendPresence(displayName: String) {
-        send(PacketType.PRESENCE, displayName.toByteArray(), ttl = 1)
+        val payload = PresencePayload(
+            name = displayName,
+            signingPublic = identity?.signingPublic?.encoded,
+            dhPublic = identity?.dhPublic?.encoded,
+        ).encode()
+        send(PacketType.PRESENCE, payload, ttl = 1)
+    }
+
+    /**
+     * Multi-hop identity announcement (same payload as presence, full TTL): lets distant
+     * nodes learn our keys/name so DMs can route across relays. Receivers do NOT treat
+     * announce senders as direct neighbors (except the unavoidable ttl-1 last hop, which
+     * presence expiry self-heals in 35 s).
+     */
+    fun sendAnnounce(displayName: String) {
+        val payload = PresencePayload(
+            name = displayName,
+            signingPublic = identity?.signingPublic?.encoded,
+            dhPublic = identity?.dhPublic?.encoded,
+        ).encode()
+        send(PacketType.PRESENCE, payload)
+    }
+
+    /**
+     * Encrypted 1:1 message, sealed to the recipient's announced X25519 key.
+     * Requires our identity and the recipient's presence to have been seen.
+     * Sealed-box today (no forward secrecy — the Noise X trade-off for offline
+     * delivery); interactive Noise XX sessions are the planned upgrade.
+     */
+    fun sendDirectChat(recipientId: NodeId, text: String): Packet {
+        checkNotNull(identity) { "MeshNode has no identity — cannot send DMs" }
+        val keys = directory.get(recipientId)
+            ?: error("no announced keys for $recipientId — wait for their presence")
+        val sealed = SealedBox.seal(keys.dhPublic, text.toByteArray())
+        return send(
+            PacketType.CHAT,
+            sealed,
+            recipientId = recipientId,
+            sign = identity::sign,
+            encrypted = true,
+        )
     }
 
     /** Put a blob in the store and announce it to the mesh. Returns its content hash. */
@@ -139,8 +201,15 @@ class MeshNode(
     private fun dispatch(packet: Packet) {
         when (packet.type) {
             PacketType.PRESENCE -> {
-                peerUp(packet.senderId)
-                onPeerPresence?.invoke(packet.senderId, String(packet.payload))
+                val presence = try {
+                    PresencePayload.decode(packet.payload)
+                } catch (_: ProtocolException) {
+                    return
+                }
+                // ttl 1 = direct presence (never relayed); higher ttl = multi-hop announce.
+                if (packet.ttl == 1) peerUp(packet.senderId)
+                if (presence.hasKeys) directory.register(packet.senderId, presence)
+                onPeerPresence?.invoke(packet.senderId, presence.name)
             }
             PacketType.SUMMARY_VECTOR -> handleSummaryVector(packet)
             PacketType.BUNDLE_PULL -> handleBundlePull(packet)
@@ -149,9 +218,37 @@ class MeshNode(
             PacketType.MEDIA_CHUNK -> handleMediaChunk(packet)
             else -> {
                 storeAsBundle(packet)
-                onMessage?.invoke(packet)
+                deliver(packet)
             }
         }
+    }
+
+    /** Verify, decrypt, and hand a CHAT/SOS/GPS packet to the app layer. */
+    private fun deliver(packet: Packet) {
+        var verified = false
+        val signature = packet.signature
+        if (signature != null) {
+            val keys = directory.get(packet.senderId)
+            if (keys != null) {
+                if (!Identity.verify(keys.signingPublic, PacketCodec.signingBytes(packet), signature)) {
+                    return // invalid signature from a known key: forged packet, drop it
+                }
+                verified = true
+            }
+        }
+        var payload = packet.payload
+        var direct = false
+        if (packet.encrypted) {
+            if (packet.recipientId != selfId) return // sealed for someone else; nothing to show
+            val self = identity ?: return
+            payload = try {
+                SealedBox.open(self, packet.payload)
+            } catch (_: Exception) {
+                return // not openable by us: damaged or misaddressed
+            }
+            direct = true
+        }
+        onMessage?.invoke(MeshMessage(packet, payload, verified, direct))
     }
 
     private fun peerUp(id: NodeId) {

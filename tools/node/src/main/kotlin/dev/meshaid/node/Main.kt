@@ -39,25 +39,32 @@ fun main(args: Array<String>) {
         transport = transport,
         bundleStore = BundleStore(System::currentTimeMillis),
         blobStore = blobStore,
+        identity = identity,
     )
 
     val names = HashMap<String, String>()
     fun label(id: Any): String = names[id.toString()] ?: id.toString().take(8)
 
-    node.onMessage = { packet ->
+    node.onMessage = { message ->
+        val packet = message.packet
+        val payload = message.payload
+        val tag = buildString {
+            if (message.direct) append(" [encrypted DM]")
+            if (message.verified) append(" ✓")
+        }
         when (packet.type) {
-            PacketType.CHAT -> println("\n[${label(packet.senderId)}] ${String(packet.payload)}")
+            PacketType.CHAT -> println("\n[${label(packet.senderId)}]$tag ${String(payload)}")
             PacketType.SOS -> {
-                val beacon = runCatching { GpsBeacon.decode(packet.payload) }.getOrNull()
-                val note = if (packet.payload.size > GpsBeacon.SIZE) {
-                    String(packet.payload, GpsBeacon.SIZE, packet.payload.size - GpsBeacon.SIZE)
+                val beacon = runCatching { GpsBeacon.decode(payload) }.getOrNull()
+                val note = if (payload.size > GpsBeacon.SIZE) {
+                    String(payload, GpsBeacon.SIZE, payload.size - GpsBeacon.SIZE)
                 } else ""
                 val fix = beacon?.takeIf { it.latE7 != 0 || it.lonE7 != 0 }
                     ?.let { "%.5f, %.5f".format(it.lat, it.lon) } ?: "no fix"
-                println("\n!!! SOS from ${label(packet.senderId)}: $note ($fix) !!!")
+                println("\n!!! SOS from ${label(packet.senderId)}$tag: $note ($fix) !!!")
             }
             PacketType.GPS_BEACON -> {
-                runCatching { GpsBeacon.decode(packet.payload) }.getOrNull()?.let {
+                runCatching { GpsBeacon.decode(payload) }.getOrNull()?.let {
                     println("\n[${label(packet.senderId)}] location: %.5f, %.5f".format(it.lat, it.lon))
                 }
             }
@@ -88,11 +95,14 @@ fun main(args: Array<String>) {
 
     node.start()
     println("MeshAid node '$name' up — id ${identity.nodeId}, LAN port ${transport.port}")
-    println("Join the phone's hotspot (or same Wi-Fi). Commands: /sos <note>, /photo <path>, /peers, /quit")
+    println("Join the phone's hotspot (or same Wi-Fi).")
+    println("Commands: @name <msg> (encrypted DM), /sos <note>, /photo <path>, /loc <lat> <lon>, /peers, /quit")
 
     thread(isDaemon = true) {
+        var beat = 0
         while (true) {
             node.sendPresence(name)
+            if (beat++ % 6 == 0) node.sendAnnounce(name)
             node.tick()
             Thread.sleep(5_000)
         }
@@ -112,8 +122,33 @@ fun main(args: Array<String>) {
             }
             input.startsWith("/sos") -> {
                 val note = input.removePrefix("/sos").trim().ifEmpty { "Emergency — need help" }
-                node.send(PacketType.SOS, GpsBeacon(0, 0, 0, 100).encode() + note.toByteArray(), sign = identity::sign)
+                node.send(PacketType.SOS, GpsBeacon(0, 0, 0, 100).encode() + note.toByteArray())
                 println("SOS broadcast sent")
+            }
+            input.startsWith("/loc") -> {
+                val parts = input.removePrefix("/loc").trim().split(Regex("\\s+"))
+                val lat = parts.getOrNull(0)?.toDoubleOrNull()
+                val lon = parts.getOrNull(1)?.toDoubleOrNull()
+                if (lat == null || lon == null) {
+                    println("usage: /loc 26.9124 75.7873")
+                } else {
+                    node.send(PacketType.GPS_BEACON, GpsBeacon.of(lat, lon, 10, 100).encode())
+                    println("location beacon sent: $lat, $lon")
+                }
+            }
+            input.startsWith("@") -> {
+                val space = input.indexOf(' ')
+                val target = if (space > 1) input.substring(1, space) else ""
+                val body = if (space > 1) input.substring(space + 1).trim() else ""
+                val match = node.directory.byName(target)
+                when {
+                    body.isEmpty() -> println("usage: @name message")
+                    match == null -> println("no peer named '$target' known yet (known: ${names.values.joinToString().ifEmpty { "none" }})")
+                    else -> {
+                        node.sendDirectChat(match.first, body)
+                        println("(encrypted DM sent to ${match.second.name})")
+                    }
+                }
             }
             input.startsWith("/photo") -> {
                 val path = input.removePrefix("/photo").trim().trim('"')
@@ -125,7 +160,7 @@ fun main(args: Array<String>) {
                 }.onFailure { println("cannot offer '$path': ${it.message}") }
             }
             else -> {
-                node.send(PacketType.CHAT, input.toByteArray(), sign = identity::sign)
+                node.send(PacketType.CHAT, input.toByteArray())
             }
         }
         print("> ")

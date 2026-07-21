@@ -29,6 +29,10 @@ class Identity(
 
     val nodeId: NodeId = nodeIdOf(signingPublic.encoded)
 
+    /** Raw 32-byte public keys — the API for callers outside core (no BC types leak). */
+    val signingPublicBytes: ByteArray get() = signingPublic.encoded
+    val dhPublicBytes: ByteArray get() = dhPublic.encoded
+
     fun sign(data: ByteArray): ByteArray {
         val signer = Ed25519Signer()
         signer.init(true, signingPrivate)

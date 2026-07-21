@@ -17,6 +17,10 @@ object MeshRepository {
         val isSos: Boolean = false,
         /** Content hash of an image in the blob store, for photo messages. */
         val imageHash: String? = null,
+        /** Signature verified against the sender's announced key. */
+        val verified: Boolean = false,
+        /** Encrypted 1:1 message. */
+        val direct: Boolean = false,
     )
 
     data class PeerInfo(
@@ -41,6 +45,13 @@ object MeshRepository {
 
     fun addMessage(message: ChatMessage) {
         _messages.value = _messages.value + message
+    }
+
+    /** Seed history from the persisted log (only when nothing is loaded yet). */
+    fun seedHistory(history: List<ChatMessage>) {
+        if (_messages.value.isEmpty() && history.isNotEmpty()) {
+            _messages.value = history
+        }
     }
 
     fun updatePeer(id: String, update: (PeerInfo) -> PeerInfo) {

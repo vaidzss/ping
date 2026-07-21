@@ -17,6 +17,7 @@ import android.os.Build
 import android.os.IBinder
 import dev.meshaid.app.MeshRepository
 import dev.meshaid.app.ble.BleMeshTransport
+import dev.meshaid.core.MeshMessage
 import dev.meshaid.core.MeshNode
 import dev.meshaid.core.blob.BlobStore
 import dev.meshaid.core.crypto.Identity
@@ -63,9 +64,15 @@ class MeshForegroundService : Service() {
     private lateinit var lanLane: LanMeshTransport
     private lateinit var node: MeshNode
     private var multicastLock: WifiManager.MulticastLock? = null
+    private lateinit var messageLog: MessageLog
     lateinit var blobStore: BlobStore
         private set
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    private fun record(message: MeshRepository.ChatMessage) {
+        messageLog.append(message)
+        MeshRepository.addMessage(message)
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -80,12 +87,15 @@ class MeshForegroundService : Service() {
                 acquire()
             }
         blobStore = BlobStore(filesDir.resolve("blobs").toPath())
+        messageLog = MessageLog(filesDir.resolve("messages.jsonl"))
+        MeshRepository.seedHistory(messageLog.load())
         node = MeshNode(
             selfId = identity.nodeId,
             clock = System::currentTimeMillis,
             transport = CompositeMeshTransport(listOf(bleLane, lanLane)),
             bundleStore = BundleStore(System::currentTimeMillis),
             blobStore = blobStore,
+            identity = identity,
         )
         node.onMessage = ::onPacket
         node.onPeerPresence = { peer, name ->
@@ -94,7 +104,7 @@ class MeshForegroundService : Service() {
         node.onMediaOffer = { offer, _ -> offer.totalSize <= MeshNode.MAX_AUTO_FETCH_BYTES }
         node.onMediaReceived = { hashHex, mimeTag, from ->
             if (mimeTag == MimeTag.JPEG || mimeTag == MimeTag.PNG) {
-                MeshRepository.addMessage(
+                record(
                     MeshRepository.ChatMessage(
                         fromId = from.toString(),
                         text = "",
@@ -119,8 +129,11 @@ class MeshForegroundService : Service() {
             }
         }
         scope.launch {
+            var beat = 0
             while (true) {
                 node.sendPresence(displayName())
+                // Every third beat, announce identity mesh-wide so distant peers can DM us.
+                if (beat++ % 3 == 0) node.sendAnnounce(displayName())
                 delay(PRESENCE_INTERVAL_MS)
             }
         }
@@ -151,9 +164,39 @@ class MeshForegroundService : Service() {
         getSharedPreferences("meshaid_profile", MODE_PRIVATE)
             .getString("display_name", null) ?: "MeshAid-${identity.nodeId.toString().take(6)}"
 
+    /** Broadcast chat — or an encrypted DM when the text is "@name message". */
     fun sendChat(text: String) {
-        val packet = node.send(PacketType.CHAT, text.toByteArray(), sign = identity::sign)
-        MeshRepository.addMessage(
+        if (text.startsWith("@")) {
+            val space = text.indexOf(' ')
+            val target = if (space > 1) text.substring(1, space) else ""
+            val body = if (space > 1) text.substring(space + 1).trim() else ""
+            val match = node.directory.byName(target)
+            if (match == null || body.isEmpty()) {
+                MeshRepository.addMessage(
+                    MeshRepository.ChatMessage(
+                        fromId = "system",
+                        text = if (match == null) "No peer named \"$target\" known yet — DMs need their presence first."
+                        else "Usage: @name message",
+                        timestampMs = System.currentTimeMillis(),
+                        mine = false,
+                    ),
+                )
+                return
+            }
+            val packet = node.sendDirectChat(match.first, body)
+            record(
+                MeshRepository.ChatMessage(
+                    fromId = identity.nodeId.toString(),
+                    text = "@${match.second.name}: $body",
+                    timestampMs = packet.timestampMs,
+                    mine = true,
+                    direct = true,
+                ),
+            )
+            return
+        }
+        val packet = node.send(PacketType.CHAT, text.toByteArray())
+        record(
             MeshRepository.ChatMessage(
                 fromId = identity.nodeId.toString(),
                 text = text,
@@ -166,8 +209,8 @@ class MeshForegroundService : Service() {
     fun sendSos(note: String) {
         val beacon = bestEffortBeacon()
         val payload = beacon.encode() + note.toByteArray()
-        val packet = node.send(PacketType.SOS, payload, sign = identity::sign)
-        MeshRepository.addMessage(
+        val packet = node.send(PacketType.SOS, payload)
+        record(
             MeshRepository.ChatMessage(
                 fromId = identity.nodeId.toString(),
                 text = "SOS: $note (${formatFix(beacon)})",
@@ -183,7 +226,7 @@ class MeshForegroundService : Service() {
         scope.launch {
             val jpeg = runCatching { compressForMesh(uri) }.getOrNull() ?: return@launch
             val hash = node.offerMedia(jpeg, MimeTag.JPEG)
-            MeshRepository.addMessage(
+            record(
                 MeshRepository.ChatMessage(
                     fromId = identity.nodeId.toString(),
                     text = "",
@@ -221,38 +264,43 @@ class MeshForegroundService : Service() {
         return out
     }
 
-    private fun onPacket(packet: Packet) {
+    private fun onPacket(message: MeshMessage) {
+        val packet = message.packet
+        val payload = message.payload
         when (packet.type) {
-            PacketType.CHAT -> MeshRepository.addMessage(
+            PacketType.CHAT -> record(
                 MeshRepository.ChatMessage(
                     fromId = packet.senderId.toString(),
-                    text = String(packet.payload),
+                    text = String(payload),
                     timestampMs = packet.timestampMs,
                     mine = false,
+                    verified = message.verified,
+                    direct = message.direct,
                 ),
             )
             PacketType.SOS -> {
-                val beacon = runCatching { GpsBeacon.decode(packet.payload) }.getOrNull()
-                val note = if (packet.payload.size > GpsBeacon.SIZE) {
-                    String(packet.payload, GpsBeacon.SIZE, packet.payload.size - GpsBeacon.SIZE)
+                val beacon = runCatching { GpsBeacon.decode(payload) }.getOrNull()
+                val note = if (payload.size > GpsBeacon.SIZE) {
+                    String(payload, GpsBeacon.SIZE, payload.size - GpsBeacon.SIZE)
                 } else ""
                 beacon?.takeIf { it.latE7 != 0 || it.lonE7 != 0 }?.let { fix ->
                     MeshRepository.updatePeer(packet.senderId.toString()) {
                         it.copy(lat = fix.lat, lon = fix.lon, lastSeenMs = System.currentTimeMillis())
                     }
                 }
-                MeshRepository.addMessage(
+                record(
                     MeshRepository.ChatMessage(
                         fromId = packet.senderId.toString(),
                         text = "SOS: $note (${beacon?.let(::formatFix) ?: "no fix"})",
                         timestampMs = packet.timestampMs,
                         mine = false,
                         isSos = true,
+                        verified = message.verified,
                     ),
                 )
             }
             PacketType.GPS_BEACON -> {
-                runCatching { GpsBeacon.decode(packet.payload) }.getOrNull()?.let { fix ->
+                runCatching { GpsBeacon.decode(payload) }.getOrNull()?.let { fix ->
                     MeshRepository.updatePeer(packet.senderId.toString()) {
                         it.copy(lat = fix.lat, lon = fix.lon, lastSeenMs = System.currentTimeMillis())
                     }
