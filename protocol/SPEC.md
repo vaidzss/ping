@@ -50,10 +50,28 @@ ignore trailing padding.
 - **Dedup cache:** 1000-entry LRU, 5-minute expiry.
 - **Density clamp:** when a node sees ≥6 direct neighbors, it clamps relayed broadcast ttl to 5
   (FireChat dense-crowd collapse countermeasure).
-- **Rate limiting:** per-origin token bucket on relays; SOS packets exempt.
-- **Payload caps:** control lane rejects payloads > 4 KiB except MEDIA_CHUNK (bulk lane only).
+- **Rate limiting:** per-origin token bucket on relays; SOS exempt (emergencies are never
+  throttled) and MEDIA_CHUNK exempt (demand-driven, bounded by an explicit request; dedup+TTL
+  still bound its flooding cost).
+- **Payload caps:** control lane rejects payloads > 4 KiB except MEDIA_CHUNK.
   Any compressed payload declares its inflated size and is rejected before decompression if it
   exceeds the cap (decompression-bomb defense).
+- **Presence:** PRESENCE is always sent with ttl = 1 (direct neighbors only, never relayed);
+  payload is the utf-8 display name. Receivers treat the sender as a direct neighbor and expire
+  it after 35 s of silence. Presence also triggers DTN sync with previously unseen peers.
+
+## Payload formats
+
+- **SUMMARY_VECTOR / BUNDLE_PULL:** `count(u8)` + count × 16-byte message ids (max 255/packet;
+  larger vectors are chunked across packets). Sent recipient-addressed with ttl 1 on peer contact,
+  at most once per peer per 30 s.
+- **MEDIA_OFFER:** `blobHash(32) | totalSize(u32) | mimeTag(u8) | chunkSize(u16)`. Mime tags:
+  0 octet, 1 jpeg, 2 png, 3 mp4. Control-lane media is capped at 1 MiB (bitchat-style);
+  larger media waits for the bulk lane.
+- **MEDIA_REQUEST:** `blobHash(32)`, recipient-addressed to the offerer (multi-hop OK).
+- **MEDIA_CHUNK:** `blobHash(32) | index(u32) | data(≤2048)`, recipient-addressed to the
+  requester. Chunks are unverified in flight; the receiver accepts the blob only if the full
+  SHA-256 matches the offered content address (forged/corrupt transfers are discarded whole).
 
 ## DTN bundles (store-carry-forward)
 

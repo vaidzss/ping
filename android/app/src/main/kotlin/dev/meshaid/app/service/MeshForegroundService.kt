@@ -7,14 +7,20 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.location.LocationManager
+import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
 import android.os.IBinder
 import dev.meshaid.app.MeshRepository
 import dev.meshaid.app.ble.BleMeshTransport
 import dev.meshaid.core.MeshNode
+import dev.meshaid.core.blob.BlobStore
 import dev.meshaid.core.crypto.Identity
+import dev.meshaid.core.dtn.BundleStore
+import dev.meshaid.core.media.MimeTag
 import dev.meshaid.core.protocol.GpsBeacon
 import dev.meshaid.core.protocol.Packet
 import dev.meshaid.core.protocol.PacketType
@@ -24,16 +30,21 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.io.ByteArrayOutputStream
 
 /**
  * Always-on mesh relay: typed connectedDevice foreground service that keeps the BLE
- * transport, router, and dedup cache alive while the app is backgrounded.
+ * transport, router, DTN store, and blob store alive while the app is backgrounded.
  */
 class MeshForegroundService : Service() {
 
     companion object {
         private const val CHANNEL_ID = "mesh"
         private const val NOTIFICATION_ID = 1
+        private const val PRESENCE_INTERVAL_MS = 10_000L
+        private const val BEACON_INTERVAL_MS = 30_000L
+        private const val MAX_IMAGE_DIMENSION = 1280
+        private const val TARGET_IMAGE_BYTES = 600 * 1024
 
         @Volatile
         var instance: MeshForegroundService? = null
@@ -47,6 +58,8 @@ class MeshForegroundService : Service() {
     private lateinit var identity: Identity
     private lateinit var transport: BleMeshTransport
     private lateinit var node: MeshNode
+    lateinit var blobStore: BlobStore
+        private set
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     override fun onCreate() {
@@ -54,8 +67,32 @@ class MeshForegroundService : Service() {
         instance = this
         identity = IdentityStore.loadOrCreate(this)
         transport = BleMeshTransport(this, identity.nodeId)
-        node = MeshNode(identity.nodeId, System::currentTimeMillis, transport)
+        blobStore = BlobStore(filesDir.resolve("blobs").toPath())
+        node = MeshNode(
+            selfId = identity.nodeId,
+            clock = System::currentTimeMillis,
+            transport = transport,
+            bundleStore = BundleStore(System::currentTimeMillis),
+            blobStore = blobStore,
+        )
         node.onMessage = ::onPacket
+        node.onPeerPresence = { peer, name ->
+            MeshRepository.updatePeer(peer.toString()) { it.copy(name = name, lastSeenMs = System.currentTimeMillis()) }
+        }
+        node.onMediaOffer = { offer, _ -> offer.totalSize <= MeshNode.MAX_AUTO_FETCH_BYTES }
+        node.onMediaReceived = { hashHex, mimeTag, from ->
+            if (mimeTag == MimeTag.JPEG || mimeTag == MimeTag.PNG) {
+                MeshRepository.addMessage(
+                    MeshRepository.ChatMessage(
+                        fromId = from.toString(),
+                        text = "",
+                        timestampMs = System.currentTimeMillis(),
+                        mine = false,
+                        imageHash = hashHex,
+                    ),
+                )
+            }
+        }
 
         startForegroundWithType()
         node.start()
@@ -63,8 +100,23 @@ class MeshForegroundService : Service() {
 
         scope.launch {
             while (true) {
-                MeshRepository.setPeerCount(transport.linkCount())
+                node.tick()
+                MeshRepository.setPeerCount(transport.linkCount().coerceAtLeast(node.router.neighborCount()))
                 delay(2000)
+            }
+        }
+        scope.launch {
+            while (true) {
+                node.sendPresence(displayName())
+                delay(PRESENCE_INTERVAL_MS)
+            }
+        }
+        scope.launch {
+            while (true) {
+                delay(BEACON_INTERVAL_MS)
+                bestEffortBeacon().takeIf { it.latE7 != 0 || it.lonE7 != 0 }?.let {
+                    node.send(PacketType.GPS_BEACON, it.encode())
+                }
             }
         }
     }
@@ -81,7 +133,9 @@ class MeshForegroundService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    fun selfIdHex(): String = identity.nodeId.toString()
+    fun displayName(): String =
+        getSharedPreferences("meshaid_profile", MODE_PRIVATE)
+            .getString("display_name", null) ?: "MeshAid-${identity.nodeId.toString().take(6)}"
 
     fun sendChat(text: String) {
         val packet = node.send(PacketType.CHAT, text.toByteArray(), sign = identity::sign)
@@ -110,6 +164,49 @@ class MeshForegroundService : Service() {
         )
     }
 
+    /** Downscale + recompress a picked image and offer it to the mesh. */
+    fun sendImage(uri: Uri) {
+        scope.launch {
+            val jpeg = runCatching { compressForMesh(uri) }.getOrNull() ?: return@launch
+            val hash = node.offerMedia(jpeg, MimeTag.JPEG)
+            MeshRepository.addMessage(
+                MeshRepository.ChatMessage(
+                    fromId = identity.nodeId.toString(),
+                    text = "",
+                    timestampMs = System.currentTimeMillis(),
+                    mine = true,
+                    imageHash = hash,
+                ),
+            )
+        }
+    }
+
+    private fun compressForMesh(uri: Uri): ByteArray {
+        val source = contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            ?: error("cannot read $uri")
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(source, 0, source.size, bounds)
+        var sample = 1
+        while (bounds.outWidth / sample > MAX_IMAGE_DIMENSION || bounds.outHeight / sample > MAX_IMAGE_DIMENSION) {
+            sample *= 2
+        }
+        val bitmap = BitmapFactory.decodeByteArray(
+            source, 0, source.size,
+            BitmapFactory.Options().apply { inSampleSize = sample },
+        ) ?: error("cannot decode image")
+        var quality = 80
+        var out: ByteArray
+        do {
+            val stream = ByteArrayOutputStream()
+            bitmap.compress(Bitmap.CompressFormat.JPEG, quality, stream)
+            out = stream.toByteArray()
+            quality -= 15
+        } while (out.size > TARGET_IMAGE_BYTES && quality >= 20)
+        bitmap.recycle()
+        check(out.size <= MeshNode.MAX_AUTO_FETCH_BYTES) { "image still too large for the control lane" }
+        return out
+    }
+
     private fun onPacket(packet: Packet) {
         when (packet.type) {
             PacketType.CHAT -> MeshRepository.addMessage(
@@ -125,6 +222,11 @@ class MeshForegroundService : Service() {
                 val note = if (packet.payload.size > GpsBeacon.SIZE) {
                     String(packet.payload, GpsBeacon.SIZE, packet.payload.size - GpsBeacon.SIZE)
                 } else ""
+                beacon?.takeIf { it.latE7 != 0 || it.lonE7 != 0 }?.let { fix ->
+                    MeshRepository.updatePeer(packet.senderId.toString()) {
+                        it.copy(lat = fix.lat, lon = fix.lon, lastSeenMs = System.currentTimeMillis())
+                    }
+                }
                 MeshRepository.addMessage(
                     MeshRepository.ChatMessage(
                         fromId = packet.senderId.toString(),
@@ -135,7 +237,14 @@ class MeshForegroundService : Service() {
                     ),
                 )
             }
-            else -> Unit // GPS beacons, presence, DTN sync: wired to the map/store in Phase 1
+            PacketType.GPS_BEACON -> {
+                runCatching { GpsBeacon.decode(packet.payload) }.getOrNull()?.let { fix ->
+                    MeshRepository.updatePeer(packet.senderId.toString()) {
+                        it.copy(lat = fix.lat, lon = fix.lon, lastSeenMs = System.currentTimeMillis())
+                    }
+                }
+            }
+            else -> Unit
         }
     }
 

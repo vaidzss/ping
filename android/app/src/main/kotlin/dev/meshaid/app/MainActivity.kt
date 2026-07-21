@@ -2,11 +2,14 @@ package dev.meshaid.app
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -14,6 +17,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -21,6 +25,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -32,7 +37,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import dev.meshaid.app.service.MeshForegroundService
@@ -44,13 +53,24 @@ class MainActivity : ComponentActivity() {
             if (grants.values.all { it }) MeshForegroundService.start(this)
         }
 
+    private val photoPicker =
+        registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+            uri?.let { MeshForegroundService.instance?.sendImage(it) }
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         ensurePermissionsAndStart()
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    MeshScreen()
+                    MeshScreen(
+                        onPickPhoto = {
+                            photoPicker.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                            )
+                        },
+                    )
                 }
             }
         }
@@ -80,8 +100,9 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun MeshScreen() {
+fun MeshScreen(onPickPhoto: () -> Unit) {
     val messages by MeshRepository.messages.collectAsState()
+    val peers by MeshRepository.peers.collectAsState()
     val peerCount by MeshRepository.peerCount.collectAsState()
     val running by MeshRepository.meshRunning.collectAsState()
     var draft by remember { mutableStateOf("") }
@@ -99,6 +120,20 @@ fun MeshScreen() {
             Text(
                 if (running) "$peerCount peer${if (peerCount == 1) "" else "s"} nearby" else "mesh offline",
                 color = Color.White,
+            )
+        }
+
+        // Named peers strip
+        val named = peers.values.filter { it.name != null }
+        if (named.isNotEmpty()) {
+            Text(
+                named.joinToString("  ·  ") { it.name!! },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFFE8F5E9))
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                style = MaterialTheme.typography.labelMedium,
+                color = Color(0xFF2E7D32),
             )
         }
 
@@ -133,10 +168,15 @@ fun MeshScreen() {
                 .padding(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            OutlinedButton(onClick = onPickPhoto) {
+                Text("📷")
+            }
             OutlinedTextField(
                 value = draft,
                 onValueChange = { draft = it },
-                modifier = Modifier.weight(1f),
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(start = 8.dp),
                 placeholder = { Text("Message everyone nearby…") },
             )
             Button(
@@ -175,12 +215,38 @@ private fun MessageBubble(msg: MeshRepository.ChatMessage) {
         ) {
             if (!msg.mine) {
                 Text(
-                    msg.fromId.take(8),
+                    MeshRepository.displayName(msg.fromId),
                     style = MaterialTheme.typography.labelSmall,
                     color = Color(0xFF616161),
                 )
             }
-            Text(msg.text, style = MaterialTheme.typography.bodyMedium)
+            msg.imageHash?.let { hash ->
+                val bitmap = rememberBlobImage(hash)
+                if (bitmap != null) {
+                    Image(
+                        bitmap = bitmap,
+                        contentDescription = "photo",
+                        modifier = Modifier
+                            .heightIn(max = 240.dp)
+                            .clip(RoundedCornerShape(8.dp)),
+                        contentScale = ContentScale.Fit,
+                    )
+                } else {
+                    Text("📷 photo unavailable", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            if (msg.text.isNotEmpty()) {
+                Text(msg.text, style = MaterialTheme.typography.bodyMedium)
+            }
         }
     }
 }
+
+@Composable
+private fun rememberBlobImage(hashHex: String): ImageBitmap? =
+    remember(hashHex) {
+        runCatching {
+            val bytes = MeshForegroundService.instance?.blobStore?.read(hashHex) ?: return@runCatching null
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+        }.getOrNull()
+    }

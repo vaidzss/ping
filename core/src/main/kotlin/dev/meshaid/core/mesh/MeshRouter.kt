@@ -59,10 +59,11 @@ class MeshRouter(
         payload: ByteArray,
         recipientId: NodeId? = null,
         encrypted: Boolean = false,
+        ttlOverride: Int? = null,
     ): Packet {
         val packet = Packet(
             type = type,
-            ttl = clampedTtl(config.baseTtl),
+            ttl = ttlOverride?.coerceIn(1, PacketCodec.MAX_TTL) ?: clampedTtl(config.baseTtl),
             timestampMs = clock(),
             senderId = selfId,
             recipientId = recipientId,
@@ -96,7 +97,7 @@ class MeshRouter(
             if (newTtl <= 0) {
                 relay = null
                 reason = "ttl expired"
-            } else if (packet.type != PacketType.SOS && !bucketFor(packet.senderId).tryConsume(clock())) {
+            } else if (rateLimited(packet.type) && !bucketFor(packet.senderId).tryConsume(clock())) {
                 relay = null
                 reason = "relay rate limited for origin ${packet.senderId}"
             } else {
@@ -105,6 +106,14 @@ class MeshRouter(
         }
         return RouteResult(deliver = forUs, relay = relay, reason = reason)
     }
+
+    /**
+     * SOS must never be throttled; MEDIA_CHUNK bursts are demand-driven (a peer explicitly
+     * requested the blob) and bounded by the transfer size, so throttling them would only
+     * stall legitimate photo relays. Dedup + TTL still bound their flooding cost.
+     */
+    private fun rateLimited(type: PacketType): Boolean =
+        type != PacketType.SOS && type != PacketType.MEDIA_CHUNK
 
     private fun clampedTtl(ttl: Int): Int {
         val capped = ttl.coerceAtMost(PacketCodec.MAX_TTL)

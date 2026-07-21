@@ -15,10 +15,23 @@ object MeshRepository {
         val timestampMs: Long,
         val mine: Boolean,
         val isSos: Boolean = false,
+        /** Content hash of an image in the blob store, for photo messages. */
+        val imageHash: String? = null,
+    )
+
+    data class PeerInfo(
+        val id: String,
+        val name: String? = null,
+        val lat: Double? = null,
+        val lon: Double? = null,
+        val lastSeenMs: Long = 0,
     )
 
     private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
     val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
+
+    private val _peers = MutableStateFlow<Map<String, PeerInfo>>(emptyMap())
+    val peers: StateFlow<Map<String, PeerInfo>> = _peers.asStateFlow()
 
     private val _peerCount = MutableStateFlow(0)
     val peerCount: StateFlow<Int> = _peerCount.asStateFlow()
@@ -29,6 +42,13 @@ object MeshRepository {
     fun addMessage(message: ChatMessage) {
         _messages.value = _messages.value + message
     }
+
+    fun updatePeer(id: String, update: (PeerInfo) -> PeerInfo) {
+        val current = _peers.value[id] ?: PeerInfo(id)
+        _peers.value = _peers.value + (id to update(current))
+    }
+
+    fun displayName(id: String): String = _peers.value[id]?.name ?: id.take(8)
 
     fun setPeerCount(count: Int) {
         _peerCount.value = count

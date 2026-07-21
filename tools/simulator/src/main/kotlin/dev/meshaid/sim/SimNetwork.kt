@@ -1,9 +1,12 @@
 package dev.meshaid.sim
 
 import dev.meshaid.core.MeshNode
+import dev.meshaid.core.blob.BlobStore
+import dev.meshaid.core.dtn.BundleStore
 import dev.meshaid.core.protocol.NodeId
 import dev.meshaid.core.protocol.Packet
 import dev.meshaid.core.transport.MeshTransport
+import java.nio.file.Files
 import kotlin.math.hypot
 import kotlin.random.Random
 
@@ -83,11 +86,24 @@ class SimNode(
     var y: Double,
 ) {
     val transport = SimTransport(this)
-    val meshNode = MeshNode(id, { network.nowMs }, transport)
+    val bundleStore = BundleStore({ network.nowMs })
+    val blobStore = BlobStore(Files.createTempDirectory("sim-blob-$id"))
+    val meshNode = MeshNode(
+        id,
+        { network.nowMs },
+        transport,
+        bundleStore = bundleStore,
+        blobStore = blobStore,
+    )
     val received = mutableListOf<Packet>()
+    val presences = mutableListOf<Pair<NodeId, String>>()
+    val mediaReceived = mutableListOf<String>()
 
     init {
         meshNode.onMessage = { received.add(it) }
+        meshNode.onPeerPresence = { peer, name -> presences.add(peer to name) }
+        meshNode.onMediaOffer = { _, _ -> true } // simulator nodes always fetch
+        meshNode.onMediaReceived = { hash, _, _ -> mediaReceived.add(hash) }
     }
 }
 
