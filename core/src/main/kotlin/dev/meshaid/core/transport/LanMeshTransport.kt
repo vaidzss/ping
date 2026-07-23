@@ -42,6 +42,13 @@ class LanMeshTransport(
     override var onPeerConnected: ((NodeId) -> Unit)? = null
     override var onPeerDisconnected: ((NodeId) -> Unit)? = null
 
+    /**
+     * Transport-level diagnostics with no equivalent in the generic MeshTransport
+     * interface: failed dial, failed handshake, a write that killed the link. All of
+     * these previously failed via a bare `catch (_: Exception) {}` with zero visibility.
+     */
+    var onDiagnostic: ((String) -> Unit)? = null
+
     @Volatile
     private var running = false
     private var server: ServerSocket? = null
@@ -74,14 +81,18 @@ class LanMeshTransport(
         val out = DataOutputStream(socket.getOutputStream().buffered())
 
         fun sendFrame(frame: ByteArray) {
-            if (frame.size > MAX_FRAME) return
+            if (frame.size > MAX_FRAME) {
+                onDiagnostic?.invoke("frame to $id too large for LAN (${frame.size} > $MAX_FRAME), dropped")
+                return
+            }
             try {
                 synchronized(out) {
                     out.writeShort(frame.size)
                     out.write(frame)
                     out.flush()
                 }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                onDiagnostic?.invoke("write to $id failed (${e.javaClass.simpleName}: ${e.message}), link dropped")
                 drop(this)
             }
         }
@@ -131,6 +142,8 @@ class LanMeshTransport(
                 val socket = Socket()
                 socket.connect(InetSocketAddress(host, tcpPort), 5_000)
                 handshakeAndRun(socket, initiator = true)
+            }.onFailure { e ->
+                onDiagnostic?.invoke("dial to $host:$tcpPort failed (${e.javaClass.simpleName}: ${e.message})")
             }
         }
     }
@@ -220,6 +233,9 @@ class LanMeshTransport(
 
     private fun handleInbound(socket: Socket) {
         runCatching { handshakeAndRun(socket, initiator = false) }
+            .onFailure { e ->
+                onDiagnostic?.invoke("inbound handshake from ${socket.inetAddress?.hostAddress} failed (${e.javaClass.simpleName}: ${e.message})")
+            }
     }
 
     private fun handshakeAndRun(socket: Socket, initiator: Boolean) {
@@ -237,6 +253,7 @@ class LanMeshTransport(
         val link = PeerLink(peerId, socket)
         val existing = peers.putIfAbsent(peerId, link)
         if (existing != null) {
+            onDiagnostic?.invoke("duplicate connection to $peerId (${if (initiator) "outbound" else "inbound"}) closed, existing link kept")
             socket.close()
             return
         }
@@ -249,8 +266,8 @@ class LanMeshTransport(
                 input.readFully(frame)
                 onFrame?.invoke(frame)
             }
-        } catch (_: Exception) {
-            // fallthrough to drop
+        } catch (e: Exception) {
+            onDiagnostic?.invoke("read loop for $peerId ended (${e.javaClass.simpleName}: ${e.message})")
         }
         drop(link)
     }

@@ -31,6 +31,10 @@ fun main(args: Array<String>) {
     Files.createDirectories(home)
     val identity = loadOrCreateIdentity(home)
     val transport = LanMeshTransport(identity.nodeId)
+    transport.onDiagnostic = { message ->
+        println("\n* LAN: $message")
+        print("> ")
+    }
     val blobDir = home.resolve("blobs")
     val blobStore = BlobStore(blobDir)
     val node = MeshNode(

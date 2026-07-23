@@ -81,6 +81,17 @@ class MeshForegroundService : Service() {
         identity = IdentityStore.loadOrCreate(this)
         bleLane = BleMeshTransport(this, identity.nodeId)
         lanLane = LanMeshTransport(identity.nodeId)
+        lanLane.onDiagnostic = { message ->
+            MeshRepository.addMessage(
+                MeshRepository.ChatMessage(
+                    fromId = "system",
+                    text = "LAN: $message",
+                    timestampMs = System.currentTimeMillis(),
+                    mine = false,
+                    system = true,
+                ),
+            )
+        }
         // Android filters multicast by default; without this lock LAN discovery is deaf.
         multicastLock = (applicationContext.getSystemService(WIFI_SERVICE) as WifiManager)
             .createMulticastLock("meshaid").apply {

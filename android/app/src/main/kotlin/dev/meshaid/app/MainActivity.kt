@@ -162,7 +162,22 @@ fun MeshScreen(onPickPhoto: () -> Unit) {
                     onSend = {
                         val text = draft.trim()
                         if (text.isNotEmpty()) {
-                            MeshForegroundService.instance?.sendChat(text)
+                            val service = MeshForegroundService.instance
+                            if (service == null) {
+                                // Rules out "the tap did nothing because the service died" —
+                                // this can never be silent now.
+                                MeshRepository.addMessage(
+                                    MeshRepository.ChatMessage(
+                                        fromId = "system",
+                                        text = "SEND FAILED - mesh service is not running. Restart the app.",
+                                        timestampMs = System.currentTimeMillis(),
+                                        mine = false,
+                                        system = true,
+                                    ),
+                                )
+                            } else {
+                                service.sendChat(text)
+                            }
                             draft = ""
                         }
                     },
