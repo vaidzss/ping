@@ -15,6 +15,17 @@ Every phone running the app is a node: messages hop phone-to-phone over Bluetoot
 5. **Phase 4 — LoRa lane:** pair Meshtastic-class nodes for kilometers of text/GPS range; gateway phones stitch distant clusters.
 6. **Phase 5 — Hardening:** field tests, battery profiling, external security review, store review prep.
 
+## Scaling local storage
+
+Chat history, friends, and identity currently live in flat files and SharedPreferences
+(`MessageLog`, `FriendStore`, `IdentityStore` — see [docs/ARCHITECTURE.md](ARCHITECTURE.md)),
+deliberately simple while the data model (threads, friends, media) is still moving.
+The planned upgrade, once that settles, is a real on-device database — SQLite via
+SQLDelight is the leading candidate — behind the same `StorageVault` at-rest-encryption
+boundary already in place: schema and query capability change, the encryption model
+doesn't. This is Android-app scope only; it doesn't touch `core`, the wire protocol, or
+the desktop node, none of which need a database to do their job.
+
 ## Later: civic reporting & legal aid for India (Phase 6)
 
 Once the mesh works, Ping grows a second, **online** tier — a platform for India where people can:
@@ -34,5 +45,7 @@ The mesh isn't separate from the civic platform — it is the **capture layer**:
 ### Scope notes (Phase 6, not built yet)
 
 - India-first: localization, alignment with legal-aid ecosystem (e.g., DLSA/NALSA-style services), moderation and verification workflows.
-- Requires a real backend (the first server-side component), identity/abuse safeguards, and careful legal review.
+- Requires a real backend (the first server-side component, with its own
+  server-side database — a different scaling problem than the on-device one above),
+  identity/abuse safeguards, and careful legal review.
 - Current architecture decisions already made compatible: content-addressed media, signed packets, store-carry-forward queueing.
