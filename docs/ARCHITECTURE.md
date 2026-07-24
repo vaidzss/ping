@@ -170,7 +170,7 @@ single chat message.
   bytes written to and read from disk. The content hash used for mesh-wide addressing
   (dedup, `MEDIA_OFFER`/`MEDIA_CHUNK` integrity checks) is always computed over the
   *plaintext*, before sealing — encryption at rest never touches the wire protocol. This
-  also keeps `BlobStore` usable by the desktop node, which has no password/identity-
+  also keeps `BlobStore` usable by the desktop node, which has no password/identity
   unlock concept at all: its `seal`/`open` hooks simply stay `null`, today's plaintext
   behavior, unchanged.
 
