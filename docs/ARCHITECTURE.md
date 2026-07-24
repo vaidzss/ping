@@ -163,9 +163,9 @@ single chat message.
   boundary: nothing is readable without the password, because nothing is readable
   without the identity the password unlocks.
 - **`android/app/service/MessageLog`**: seals each chat message individually before
-  appending it as a line to `messages.jsonl` — Base64-encoded, since raw ChaCha20-
-  Poly1305 ciphertext can contain a byte that looks like a newline and would otherwise
-  corrupt the file's line-based format.
+  appending it as a line to `messages.jsonl` — Base64-encoded, since raw
+  ChaCha20-Poly1305 ciphertext can contain a byte that looks like a newline and would
+  otherwise corrupt the file's line-based format.
 - **`core/blob/BlobStore`**: takes optional `seal`/`open` hooks applied only to the
   bytes written to and read from disk. The content hash used for mesh-wide addressing
   (dedup, `MEDIA_OFFER`/`MEDIA_CHUNK` integrity checks) is always computed over the
