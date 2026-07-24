@@ -31,6 +31,19 @@ class PeerDirectory {
         return true
     }
 
+    /**
+     * Same id/key binding check as [register], for keys learned out of band (an in-person
+     * QR contact exchange, [ContactCard]) rather than from a presence packet heard over the
+     * mesh. Stronger trust than presence-only registration: the name came with the scan, not
+     * from an unauthenticated broadcast anyone in range could claim.
+     */
+    @Synchronized
+    fun registerVerified(name: String, signingPublic: ByteArray, dhPublic: ByteArray): NodeId? {
+        val nodeId = Identity.nodeIdOf(signingPublic)
+        peers[nodeId] = PeerKeys(name, signingPublic, dhPublic)
+        return nodeId
+    }
+
     @Synchronized
     fun get(id: NodeId): PeerKeys? = peers[id]
 

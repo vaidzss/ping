@@ -41,3 +41,42 @@ jobs:
           path: |
             core/build/reports/tests
             tools/simulator/build/reports/tests
+
+  # Only runs once RELEASE_* secrets exist (Settings -> Secrets and variables -> Actions —
+  # see docs/RELEASING.md for how to generate and add them). Silently skipped otherwise, so
+  # this never blocks anyone who hasn't set up signing yet.
+  release-build:
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/master' && vars.RELEASE_SIGNING_CONFIGURED == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Decode the release keystore
+        run: echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 -d > release.keystore
+
+      - name: Signed release build
+        env:
+          RELEASE_STORE_FILE: ${{ github.workspace }}/release.keystore
+          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: ./gradlew :android:app:assembleRelease --console=plain
+
+      - name: Remove the decoded keystore
+        if: always()
+        run: rm -f release.keystore
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ping-release-apk
+          path: android/app/build/outputs/apk/release/*.apk

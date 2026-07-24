@@ -38,6 +38,28 @@ class MediaCodecsTest {
     }
 
     @Test
+    fun `media request bitmap round trips arbitrary index sets`() {
+        val hash = Random(6).nextBytes(32)
+
+        // Every chunk requested (a fresh, non-resumed request).
+        val all = MediaCodecs.decodeRequest(MediaCodecs.encodeRequest(hash, 20, 0 until 20))
+        assertContentEquals(hash, all.blobHash)
+        assertEquals((0 until 20).toList(), all.requestedIndices)
+
+        // A resume request for just the gaps left by a stalled transfer.
+        val sparse = MediaCodecs.decodeRequest(MediaCodecs.encodeRequest(hash, 20, listOf(0, 5, 19)))
+        assertEquals(listOf(0, 5, 19), sparse.requestedIndices)
+
+        // Nothing missing — a valid, if useless, all-zero bitmap.
+        val none = MediaCodecs.decodeRequest(MediaCodecs.encodeRequest(hash, 20, emptyList()))
+        assertTrue(none.requestedIndices.isEmpty())
+
+        // Chunk counts that don't land on a byte boundary still round-trip cleanly.
+        val odd = MediaCodecs.decodeRequest(MediaCodecs.encodeRequest(hash, 1, listOf(0)))
+        assertEquals(listOf(0), odd.requestedIndices)
+    }
+
+    @Test
     fun `summary vector round trips and enforces its cap`() {
         val ids = (0 until 200).map { MessageId(Random(it).nextBytes(16)) }
         val decoded = SummaryVector.decode(SummaryVector.encode(ids))

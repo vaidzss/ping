@@ -20,6 +20,7 @@ import dev.meshaid.app.ble.BleMeshTransport
 import dev.meshaid.core.MeshMessage
 import dev.meshaid.core.MeshNode
 import dev.meshaid.core.blob.BlobStore
+import dev.meshaid.core.crypto.ContactCard
 import dev.meshaid.core.crypto.Identity
 import dev.meshaid.core.crypto.StorageVault
 import dev.meshaid.core.dtn.BundleStore
@@ -275,6 +276,24 @@ class MeshForegroundService : Service() {
     fun addFriend(id: String, name: String) {
         FriendStore.add(this, id, name)
         MeshRepository.setFriends(FriendStore.load(this))
+    }
+
+    /** The QR payload for someone to scan in person to add this device as a verified contact. */
+    fun myContactCard(): ContactCard = ContactCard.of(identity, displayName())
+
+    /**
+     * Registers a scanned contact card: stronger trust than the ordinary "seen broadcasting
+     * nearby" add, since the keys came from an in-person QR scan rather than an unauthenticated
+     * presence packet anyone in range could send. Works even before the peer is ever heard on
+     * the mesh — DMs to them can be sent as soon as they're in range, no waiting for presence.
+     */
+    fun addVerifiedContact(card: ContactCard): String {
+        val nodeId = node.directory.registerVerified(card.name, card.signingPublic, card.dhPublic)
+        val id = nodeId.toString()
+        FriendStore.add(this, id, card.name)
+        MeshRepository.setFriends(FriendStore.load(this))
+        MeshRepository.updatePeer(id) { it.copy(name = card.name, verified = true) }
+        return id
     }
 
     fun sendSos(note: String) = scope.launch {
