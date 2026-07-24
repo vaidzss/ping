@@ -20,6 +20,20 @@ describing your intended approach before you write code saves everyone time —
 especially for anything touching `core/mesh` or `core/crypto`, where subtle changes can
 have mesh-wide correctness or security implications.
 
+## How to submit a change
+
+`master` is protected — nobody, maintainers included, pushes to it directly. All changes
+go through a pull request:
+
+1. Fork the repo, branch off `master` (e.g. `fix-ble-timeout`).
+2. Make your change, following the guidance below.
+3. Push to your fork and open a PR against `vaidzss/ping:master`. The [PR
+   template](.github/PULL_REQUEST_TEMPLATE.md) has a short checklist.
+4. CI (`.github/workflows/ci.yml`) runs `core`/`simulator` tests and the Android build
+   on every PR — it has to be green before merge.
+5. PRs are squash-merged, so commit hygiene on your branch doesn't need to be precious;
+   the PR title and description are what become the permanent commit message.
+
 ## Development setup
 
 Requires JDK 17+ and the Android SDK (`local.properties` → `sdk.dir`).

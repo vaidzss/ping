@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # Pure JVM — no Android SDK needed. This is where a mesh-logic bug should get
+      # caught first; see docs/ARCHITECTURE.md on why core+simulator carry that weight.
+      - name: core + simulator tests
+        run: ./gradlew :core:test :tools:simulator:test --console=plain
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Android debug build
+        run: ./gradlew :android:app:assembleDebug --console=plain
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            core/build/reports/tests
+            tools/simulator/build/reports/tests
