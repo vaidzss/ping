@@ -144,6 +144,36 @@ the same trade-off Briar makes, and for the same reason: any recovery path is a 
 the key living somewhere else, which is exactly what a serverless, no-custodian design
 is trying to avoid.
 
+## At-rest encryption beyond the identity key (Android app)
+
+`PasswordVault` only ever seals one thing: the identity's private key, once, at
+signup/login. Everything else the app persists locally — chat history, received/sent
+photos — goes through a second, separate mechanism, because reusing `PasswordVault`'s
+approach for those wouldn't work: it re-derives its key via ~210k PBKDF2 iterations on
+every seal, which is the right cost for one login but far too slow to pay on every
+single chat message.
+
+- **`core/crypto/StorageVault`**: derives a key from the *unlocked* identity's private
+  key material via HKDF-SHA256 (not from the password directly), then seals with
+  ChaCha20-Poly1305. Because this key gets reused across many seals (unlike
+  `PasswordVault`'s one-shot use, or `SealedBox`'s fresh ephemeral key per DM), every
+  seal draws its own random 12-byte nonce rather than relying on a zero-nonce shortcut.
+  Deriving from the identity rather than the password means the expensive PBKDF2 step
+  only happens once, at login, while storage encryption stays tied to the same trust
+  boundary: nothing is readable without the password, because nothing is readable
+  without the identity the password unlocks.
+- **`android/app/service/MessageLog`**: seals each chat message individually before
+  appending it as a line to `messages.jsonl` — Base64-encoded, since raw
+  ChaCha20-Poly1305 ciphertext can contain a byte that looks like a newline and would
+  otherwise corrupt the file's line-based format.
+- **`core/blob/BlobStore`**: takes optional `seal`/`open` hooks applied only to the
+  bytes written to and read from disk. The content hash used for mesh-wide addressing
+  (dedup, `MEDIA_OFFER`/`MEDIA_CHUNK` integrity checks) is always computed over the
+  *plaintext*, before sealing — encryption at rest never touches the wire protocol. This
+  also keeps `BlobStore` usable by the desktop node, which has no password/identity
+  unlock concept at all: its `seal`/`open` hooks simply stay `null`, today's plaintext
+  behavior, unchanged.
+
 ## Diagnostics: no silent drops
 
 A large fraction of the project's early debugging time went into chasing failures that
