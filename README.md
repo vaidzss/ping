@@ -43,5 +43,6 @@ gradlew.bat :android:app:assembleDebug          # Android APK
 - [docs/SECURITY.md](docs/SECURITY.md) — threat model, crypto primitives, what's
   protected and what isn't.
 - [docs/TESTING.md](docs/TESTING.md) — testing the app with only one physical phone.
+- [docs/RELEASING.md](docs/RELEASING.md) — generating a release keystore and signing a build.
 - [protocol/SPEC.md](protocol/SPEC.md) — wire format and mesh protocol rules.
 - [CONTRIBUTING.md](CONTRIBUTING.md) — how to get started contributing.

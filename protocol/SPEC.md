@@ -78,7 +78,13 @@ ignore trailing padding.
 - **MEDIA_OFFER:** `blobHash(32) | totalSize(u32) | mimeTag(u8) | chunkSize(u16)`. Mime tags:
   0 octet, 1 jpeg, 2 png, 3 mp4. Control-lane media is capped at 1 MiB (bitchat-style);
   larger media waits for the bulk lane.
-- **MEDIA_REQUEST:** `blobHash(32)`, recipient-addressed to the offerer (multi-hop OK).
+- **MEDIA_REQUEST:** `blobHash(32) | chunkCount(u16) | bitmap(⌈chunkCount/8⌉ bytes)`,
+  recipient-addressed to the offerer (multi-hop OK). One bit per chunk, set = requested.
+  Sent once with every bit set to start a transfer; sent again with only the still-missing
+  bits set to resume one after a stall — same shape either way. `MeshNode.tick()` re-sends
+  automatically (`MEDIA_RESUME_TIMEOUT_MS` = 8 s of no chunk activity) using
+  `IncomingTransfer.missing()`, so a transfer interrupted by a link drop resumes instead of
+  restarting from chunk 0.
 - **MEDIA_CHUNK:** `blobHash(32) | index(u32) | data(≤2048)`, recipient-addressed to the
   requester. Chunks are unverified in flight; the receiver accepts the blob only if the full
   SHA-256 matches the offered content address (forged/corrupt transfers are discarded whole).

@@ -55,6 +55,14 @@ object MeshRepository {
     private val _friends = MutableStateFlow<Map<String, String>>(emptyMap())
     val friends: StateFlow<Map<String, String>> = _friends.asStateFlow()
 
+    /** Result of the most recent QR scan attempt, shown inline on MyQrScreen. */
+    private val _qrScanMessage = MutableStateFlow<String?>(null)
+    val qrScanMessage: StateFlow<String?> = _qrScanMessage.asStateFlow()
+
+    fun setQrScanMessage(message: String?) {
+        _qrScanMessage.value = message
+    }
+
     fun setFriends(map: Map<String, String>) {
         _friends.value = map
     }

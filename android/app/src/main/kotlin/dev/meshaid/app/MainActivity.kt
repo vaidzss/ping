@@ -69,8 +69,11 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import dev.meshaid.app.service.IdentityStore
 import dev.meshaid.app.service.MeshForegroundService
+import dev.meshaid.core.crypto.ContactCard
 import dev.meshaid.core.crypto.Identity
 import dev.meshaid.core.protocol.NodeId
 import java.text.SimpleDateFormat
@@ -108,6 +111,20 @@ class MainActivity : ComponentActivity() {
             uri?.let { MeshForegroundService.instance?.sendImage(it) }
         }
 
+    // CaptureActivity (from zxing-android-embedded) requests CAMERA itself if not yet
+    // granted — no separate runtime-permission plumbing needed here.
+    private val qrScanLauncher = registerForActivityResult(ScanContract()) { result ->
+        val scanned = result.contents ?: return@registerForActivityResult
+        runCatching { ContactCard.parse(scanned) }
+            .onSuccess { card ->
+                MeshForegroundService.instance?.addVerifiedContact(card)
+                MeshRepository.setQrScanMessage("Added ${card.name.uppercase()} as a verified contact.")
+            }
+            .onFailure {
+                MeshRepository.setQrScanMessage("That QR code isn't a Ping contact card.")
+            }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
@@ -121,6 +138,15 @@ class MainActivity : ComponentActivity() {
                         onPickPhoto = {
                             photoPicker.launch(
                                 PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                            )
+                        },
+                        onScanContact = {
+                            MeshRepository.setQrScanMessage(null)
+                            qrScanLauncher.launch(
+                                ScanOptions()
+                                    .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                                    .setBeepEnabled(false)
+                                    .setOrientationLocked(true),
                             )
                         },
                     )
@@ -155,7 +181,7 @@ class MainActivity : ComponentActivity() {
 
 /** Top-level screen switch: sign-up or login gates the mesh screen behind an unlocked identity. */
 @Composable
-private fun App(onUnlocked: (Identity) -> Unit, onPickPhoto: () -> Unit) {
+private fun App(onUnlocked: (Identity) -> Unit, onPickPhoto: () -> Unit, onScanContact: () -> Unit) {
     val context = LocalContext.current
     var unlocked by remember { mutableStateOf(false) }
     var hasAccount by remember { mutableStateOf<Boolean?>(null) }
@@ -165,7 +191,7 @@ private fun App(onUnlocked: (Identity) -> Unit, onPickPhoto: () -> Unit) {
     LaunchedEffect(Unit) { hasAccount = IdentityStore.hasAccount(context) }
 
     when {
-        unlocked -> MeshScreen(onPickPhoto = onPickPhoto)
+        unlocked -> MeshScreen(onPickPhoto = onPickPhoto, onScanContact = onScanContact)
         hasAccount == null -> Box(Modifier.fillMaxSize().background(Night))
         hasAccount == false -> SignUpScreen(
             error = signUpError,
@@ -204,11 +230,12 @@ private fun App(onUnlocked: (Identity) -> Unit, onPickPhoto: () -> Unit) {
 private sealed class Screen {
     data object ChatsList : Screen()
     data object Broadcast : Screen()
+    data object MyQr : Screen()
     data class Thread(val peerId: String) : Screen()
 }
 
 @Composable
-fun MeshScreen(onPickPhoto: () -> Unit) {
+fun MeshScreen(onPickPhoto: () -> Unit, onScanContact: () -> Unit) {
     val running by MeshRepository.meshRunning.collectAsState()
     var screen by remember { mutableStateOf<Screen>(Screen.ChatsList) }
 
@@ -222,7 +249,20 @@ fun MeshScreen(onPickPhoto: () -> Unit) {
                     ChatsList(
                         onOpenBroadcast = { screen = Screen.Broadcast },
                         onOpenThread = { id -> screen = Screen.Thread(id) },
+                        onOpenMyQr = { screen = Screen.MyQr },
                     )
+                }
+                Screen.MyQr -> {
+                    val service = MeshForegroundService.instance
+                    val scanMessage by MeshRepository.qrScanMessage.collectAsState()
+                    if (service != null) {
+                        MyQrScreen(
+                            myCard = service.myContactCard(),
+                            onBack = { screen = Screen.ChatsList },
+                            onScan = onScanContact,
+                            scanResult = scanMessage,
+                        )
+                    }
                 }
                 Screen.Broadcast -> BroadcastScreen(
                     onBack = { screen = Screen.ChatsList },
@@ -346,7 +386,12 @@ private fun HairLine() {
 // (each a real 1:1 thread), then anyone nearby who isn't a friend yet.
 
 @Composable
-private fun ChatsList(modifier: Modifier = Modifier, onOpenBroadcast: () -> Unit, onOpenThread: (String) -> Unit) {
+private fun ChatsList(
+    modifier: Modifier = Modifier,
+    onOpenBroadcast: () -> Unit,
+    onOpenThread: (String) -> Unit,
+    onOpenMyQr: () -> Unit,
+) {
     val messages by MeshRepository.messages.collectAsState()
     val peers by MeshRepository.peers.collectAsState()
     val friends by MeshRepository.friends.collectAsState()
@@ -366,6 +411,7 @@ private fun ChatsList(modifier: Modifier = Modifier, onOpenBroadcast: () -> Unit
 
     LazyColumn(modifier = modifier.fillMaxWidth(), contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 6.dp)) {
         item { BroadcastRow(lastMessage = lastBroadcast, onClick = onOpenBroadcast) }
+        item { MyQrRow(onClick = onOpenMyQr) }
         if (friendRows.isNotEmpty()) {
             item { SectionLabel("FRIENDS") }
             items(friendRows) { (row, lastMsg) ->
@@ -444,6 +490,32 @@ private fun BroadcastRow(lastMessage: MeshRepository.ChatMessage?, onClick: () -
                 fontFamily = Mono,
                 fontSize = 11.sp,
             )
+        }
+        Spacer(Modifier.width(8.dp))
+        Text("›", color = Slate, fontFamily = Mono, fontSize = 16.sp)
+    }
+    HairLine()
+}
+
+@Composable
+private fun MyQrRow(onClick: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(8.dp).background(DmCyan, CircleShape))
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                "MY CONTACT CARD",
+                color = DmCyan,
+                fontFamily = Mono,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.sp,
+            )
+            Spacer(Modifier.height(2.dp))
+            Text("show your QR · scan someone else's", color = Slate, fontFamily = Mono, fontSize = 11.sp)
         }
         Spacer(Modifier.width(8.dp))
         Text("›", color = Slate, fontFamily = Mono, fontSize = 16.sp)
@@ -662,7 +734,7 @@ private fun ThreadScreen(peerId: String, onBack: () -> Unit, enabled: Boolean) {
 
 /** Shared header for any single-conversation screen (broadcast or a friend's thread). */
 @Composable
-private fun ThreadHeaderRow(title: String, online: Boolean, onBack: () -> Unit) {
+internal fun ThreadHeaderRow(title: String, online: Boolean, onBack: () -> Unit) {
     Row(
         modifier = Modifier.fillMaxWidth().background(Panel).padding(horizontal = 10.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,

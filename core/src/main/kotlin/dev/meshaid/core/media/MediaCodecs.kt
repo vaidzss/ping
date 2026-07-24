@@ -52,12 +52,37 @@ object MediaCodecs {
         )
     }
 
-    /** MEDIA_REQUEST payload: blobHash(32). */
-    fun encodeRequest(blobHash: ByteArray): ByteArray = blobHash.copyOf()
+    class MediaRequest(val blobHash: ByteArray, val requestedIndices: List<Int>)
 
-    fun decodeRequest(payload: ByteArray): ByteArray {
-        if (payload.size < 32) throw ProtocolException("media request truncated")
-        return payload.copyOf(32)
+    /**
+     * MEDIA_REQUEST payload: blobHash(32) | chunkCount(u16) | bitmap(ceil(chunkCount/8) bytes).
+     * One bit per chunk, set = requested. Sent once with every bit set to start a transfer,
+     * and again with only the still-missing bits set to resume one — same message shape
+     * either way, so the offerer doesn't need to distinguish "fresh" from "resumed" requests.
+     */
+    fun encodeRequest(blobHash: ByteArray, chunkCount: Int, requestedIndices: Iterable<Int>): ByteArray {
+        val bitmapBytes = (chunkCount + 7) / 8
+        val bitmap = ByteArray(bitmapBytes)
+        for (i in requestedIndices) {
+            if (i in 0 until chunkCount) bitmap[i / 8] = (bitmap[i / 8].toInt() or (1 shl (i % 8))).toByte()
+        }
+        return ByteBuffer.allocate(32 + 2 + bitmapBytes)
+            .put(blobHash)
+            .putShort(chunkCount.toShort())
+            .put(bitmap)
+            .array()
+    }
+
+    fun decodeRequest(payload: ByteArray): MediaRequest {
+        if (payload.size < 34) throw ProtocolException("media request truncated")
+        val buf = ByteBuffer.wrap(payload)
+        val hash = ByteArray(32).also { buf.get(it) }
+        val chunkCount = buf.short.toInt() and 0xFFFF
+        val bitmapBytes = (chunkCount + 7) / 8
+        if (buf.remaining() < bitmapBytes) throw ProtocolException("media request bitmap truncated")
+        val bitmap = ByteArray(bitmapBytes).also { buf.get(it) }
+        val indices = (0 until chunkCount).filter { (bitmap[it / 8].toInt() shr (it % 8)) and 1 == 1 }
+        return MediaRequest(hash, indices)
     }
 
     /** MEDIA_CHUNK payload: blobHash(32) | index(u32) | data. */

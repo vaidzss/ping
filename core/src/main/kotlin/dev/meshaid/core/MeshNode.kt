@@ -56,6 +56,9 @@ class MeshNode(
         const val PRESENCE_TIMEOUT_MS = 35_000L
         const val SYNC_INTERVAL_MS = 30_000L
         const val MAX_AUTO_FETCH_BYTES = 1 shl 20 // control-lane media cap: 1 MiB
+
+        /** No chunk arrival for this long on an incomplete transfer -> re-request what's missing. */
+        const val MEDIA_RESUME_TIMEOUT_MS = 8_000L
     }
 
     val router = MeshRouter(selfId, clock, config)
@@ -93,7 +96,10 @@ class MeshNode(
 
     private val presenceSeen = HashMap<NodeId, Long>()
     private val lastSync = HashMap<NodeId, Long>()
-    private val incoming = HashMap<String, Pair<IncomingTransfer, NodeId>>()
+
+    /** [lastActivityMs] resets on every accepted chunk — [tick] uses it to detect a stalled transfer. */
+    private class IncomingState(val transfer: IncomingTransfer, val from: NodeId, var lastActivityMs: Long)
+    private val incoming = HashMap<String, IncomingState>()
 
     init {
         transport.onFrame = ::receiveFrame
@@ -185,7 +191,7 @@ class MeshNode(
         return ref.hashHex
     }
 
-    /** Expire silent neighbors. Call periodically (the service/simulator heartbeat). */
+    /** Expire silent neighbors and resume any stalled media transfer. Call periodically. */
     fun tick() {
         val now = clock()
         val expired = synchronized(presenceSeen) {
@@ -194,6 +200,20 @@ class MeshNode(
             gone
         }
         expired.forEach { router.neighborDown(it) }
+
+        val stalled = synchronized(incoming) {
+            incoming.values.filter { now - it.lastActivityMs > MEDIA_RESUME_TIMEOUT_MS }
+        }
+        stalled.forEach { state ->
+            val missing = state.transfer.missing()
+            if (missing.isEmpty()) return@forEach // complete but not yet cleaned up — leave it to handleMediaChunk
+            synchronized(incoming) { state.lastActivityMs = now }
+            send(
+                PacketType.MEDIA_REQUEST,
+                MediaCodecs.encodeRequest(state.transfer.offer.blobHash, state.transfer.offer.chunkCount, missing),
+                recipientId = state.from,
+            )
+        }
     }
 
     // ---------------------------------------------------------------- receiving
@@ -370,33 +390,35 @@ class MeshNode(
         }
         if (onMediaOffer?.invoke(offer, packet.senderId) != true) return
         synchronized(incoming) {
-            incoming[offer.hashHex] = IncomingTransfer(offer) to packet.senderId
+            incoming[offer.hashHex] = IncomingState(IncomingTransfer(offer), packet.senderId, clock())
         }
-        send(PacketType.MEDIA_REQUEST, MediaCodecs.encodeRequest(offer.blobHash), recipientId = packet.senderId)
+        send(
+            PacketType.MEDIA_REQUEST,
+            MediaCodecs.encodeRequest(offer.blobHash, offer.chunkCount, 0 until offer.chunkCount),
+            recipientId = packet.senderId,
+        )
     }
 
     private fun handleMediaRequest(packet: Packet) {
         val store = blobStore ?: return
-        val hash = try {
+        val request = try {
             MediaCodecs.decodeRequest(packet.payload)
         } catch (_: ProtocolException) {
             return
         }
-        val hashHex = hash.joinToString("") { "%02x".format(it) }
+        val hashHex = request.blobHash.joinToString("") { "%02x".format(it) }
         if (!store.has(hashHex)) return
         val data = store.read(hashHex)
         val chunkSize = MediaCodecs.DEFAULT_CHUNK_SIZE
-        var index = 0
-        var offset = 0
-        while (offset < data.size || (data.isEmpty() && index == 0)) {
+        for (index in request.requestedIndices) {
+            val offset = index * chunkSize
+            if (offset > data.size) continue // stale index for this blob's actual size — ignore, not fatal
             val end = minOf(offset + chunkSize, data.size)
             send(
                 PacketType.MEDIA_CHUNK,
-                MediaCodecs.encodeChunk(hash, index, data.copyOfRange(offset, end)),
+                MediaCodecs.encodeChunk(request.blobHash, index, data.copyOfRange(offset, end)),
                 recipientId = packet.senderId,
             )
-            index++
-            offset = end
         }
     }
 
@@ -408,14 +430,16 @@ class MeshNode(
             return
         }
         val hashHex = chunk.blobHash.joinToString("") { "%02x".format(it) }
-        val (transfer, from) = synchronized(incoming) { incoming[hashHex] } ?: return
-        transfer.accept(chunk.index, chunk.data)
-        if (!transfer.isComplete()) return
-        val data = transfer.assembleVerified()
+        val state = synchronized(incoming) { incoming[hashHex] } ?: return
+        if (state.transfer.accept(chunk.index, chunk.data)) {
+            synchronized(incoming) { state.lastActivityMs = clock() }
+        }
+        if (!state.transfer.isComplete()) return
+        val data = state.transfer.assembleVerified()
         synchronized(incoming) { incoming.remove(hashHex) }
         if (data == null) return // hash mismatch: forged or corrupted transfer, drop it all
         store.put(data)
-        onMediaReceived?.invoke(hashHex, transfer.offer.mimeTag, from)
+        onMediaReceived?.invoke(hashHex, state.transfer.offer.mimeTag, state.from)
     }
 
     private fun transmit(packet: Packet) {

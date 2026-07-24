@@ -87,6 +87,21 @@ class CryptoTest {
     }
 
     @Test
+    fun `a scanned contact card registers into the directory under its own nodeId`() {
+        val identity = Identity.generate()
+        val card = ContactCard.parse(ContactCard.of(identity, "Field Team B").toUri())
+        val directory = PeerDirectory()
+
+        val registeredId = directory.registerVerified(card.name, card.signingPublic, card.dhPublic)
+
+        assertEquals(identity.nodeId, registeredId)
+        val keys = directory.get(identity.nodeId)
+        assertEquals("Field Team B", keys?.name)
+        assertContentEquals(card.dhPublic, keys?.dhPublic)
+        assertEquals(identity.nodeId, directory.byName("Field Team B")?.first)
+    }
+
+    @Test
     fun `password vault round trips the identity`() {
         val identity = Identity.generate()
         val sealed = PasswordVault.seal(identity.exportPrivate(), "correct horse battery staple")
