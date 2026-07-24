@@ -16,14 +16,19 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # Must come before any ./gradlew invocation, even one only targeting :core — Gradle
+      # evaluates every module in settings.gradle.kts to build the task graph, and the
+      # Android Gradle Plugin fails :android:app's configuration without an SDK/
+      # local.properties present, regardless of which task was actually requested.
+      - uses: android-actions/setup-android@v3
+
       - uses: gradle/actions/setup-gradle@v4
 
-      # Pure JVM — no Android SDK needed. This is where a mesh-logic bug should get
-      # caught first; see docs/ARCHITECTURE.md on why core+simulator carry that weight.
+      # Pure JVM — no Android SDK needed at runtime. This is where a mesh-logic bug
+      # should get caught first; see docs/ARCHITECTURE.md on why core+simulator carry
+      # that weight.
       - name: core + simulator tests
         run: ./gradlew :core:test :tools:simulator:test --console=plain
-
-      - uses: android-actions/setup-android@v3
 
       - name: Android debug build
         run: ./gradlew :android:app:assembleDebug --console=plain
