@@ -57,7 +57,7 @@ class DmOverLanTest {
             await(what = "link up") { lanPhone.peerCount() == 1 && lanLaptop.peerCount() == 1 }
 
             // Presence with keys, both ways (what the 5s/10s heartbeats do in production).
-            phone.sendPresence("MeshAid-test")
+            phone.sendPresence("Ping-test")
             laptop.sendPresence("VAIDZ")
             await(what = "phone learns laptop keys") { phone.directory.get(idLaptop.nodeId) != null }
             await(what = "laptop learns phone keys") { laptop.directory.get(idPhone.nodeId) != null }
@@ -80,6 +80,74 @@ class DmOverLanTest {
             phone.send(dev.meshaid.core.protocol.PacketType.CHAT, "broadcast from phone".toByteArray())
             await(what = "phone->laptop broadcast") {
                 atLaptop.any { !it.direct && String(it.payload) == "broadcast from phone" }
+            }
+        } finally {
+            phone.stop()
+            laptop.stop()
+        }
+    }
+
+    /**
+     * The actual field bug, once the "always connected" assumption above is dropped: a DM
+     * sent during a momentary link flap (observed live as repeated `LanMeshTransport`
+     * `EOFException`s on a real phone+laptop test) used to vanish with zero trace, because
+     * only broadcast CHAT/SOS were eligible for DTN bundling — a recipient-addressed DM sent
+     * while `broadcast()` had zero connected peers was a silent no-op with no retry.
+     */
+    @Test
+    fun `DM sent during a transient link dropout is not lost`() {
+        val idPhone = Identity.generate()
+        val idLaptop = Identity.generate()
+        var lanPhone = LanMeshTransport(idPhone.nodeId, enableDiscovery = false)
+        val lanLaptop = LanMeshTransport(idLaptop.nodeId, enableDiscovery = false)
+        val bundleStorePhone = BundleStore(System::currentTimeMillis)
+
+        fun mesh(identity: Identity, lan: LanMeshTransport, bundles: BundleStore) = MeshNode(
+            identity.nodeId,
+            System::currentTimeMillis,
+            lan,
+            bundleStore = bundles,
+            blobStore = BlobStore(Files.createTempDirectory("dm-lan-dropout")),
+            identity = identity,
+        )
+
+        var phone = mesh(idPhone, lanPhone, bundleStorePhone)
+        val laptop = mesh(idLaptop, lanLaptop, BundleStore(System::currentTimeMillis))
+
+        val atLaptop = mutableListOf<MeshMessage>()
+        laptop.onMessage = { atLaptop.add(it) }
+
+        try {
+            phone.start()
+            laptop.start()
+            lanPhone.connectTo("127.0.0.1", lanLaptop.port)
+            await(what = "link up") { lanPhone.peerCount() == 1 && lanLaptop.peerCount() == 1 }
+
+            phone.sendPresence("Ping-test")
+            laptop.sendPresence("VAIDZ")
+            await(what = "phone learns laptop keys") { phone.directory.get(idLaptop.nodeId) != null }
+            await(what = "laptop learns phone keys") { laptop.directory.get(idPhone.nodeId) != null }
+
+            // Drop the link — both transports see their peer disappear, mirroring the
+            // repeated EOFExceptions observed on a real hotspot connection.
+            lanPhone.stop()
+            await(what = "laptop notices the drop") { lanLaptop.peerCount() == 0 }
+
+            // Sent while transport.broadcast() has zero peers: this must not throw, and
+            // must not simply vanish.
+            phone.sendDirectChat(idLaptop.nodeId, "hi during dropout")
+            assertTrue(bundleStorePhone.size() == 1, "the DM must be queued as a bundle, not just fired into the void")
+
+            // Recreate the phone's transport (a fresh ephemeral port, same as a real
+            // reconnect after Wi-Fi drops) and reconnect — the same MeshNode, new lane.
+            lanPhone = LanMeshTransport(idPhone.nodeId, enableDiscovery = false)
+            phone = mesh(idPhone, lanPhone, bundleStorePhone)
+            phone.start()
+            lanPhone.connectTo("127.0.0.1", lanLaptop.port)
+            await(what = "link back up") { lanPhone.peerCount() == 1 && lanLaptop.peerCount() == 1 }
+
+            await(what = "DM recovered via DTN sync after reconnect", timeoutMs = 15_000) {
+                atLaptop.any { it.direct && String(it.payload) == "hi during dropout" }
             }
         } finally {
             phone.stop()

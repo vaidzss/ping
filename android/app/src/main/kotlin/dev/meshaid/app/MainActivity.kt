@@ -27,8 +27,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -45,6 +48,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -58,13 +62,17 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import dev.meshaid.app.service.IdentityStore
 import dev.meshaid.app.service.MeshForegroundService
+import dev.meshaid.core.crypto.Identity
+import dev.meshaid.core.protocol.NodeId
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -72,23 +80,27 @@ import java.util.Locale
 // ---------------------------------------------------------------------------- design tokens
 // "Field radio" identity: emergencies mean blackouts and night — a dark panel is an
 // OLED-battery decision, not a style. Three signal colors, each with one meaning.
-private val Night = Color(0xFF0C1116) // instrument panel background
-private val Panel = Color(0xFF131A21) // raised strips
-private val Inkwell = Color(0xFF223039) // hairlines
-private val Chalk = Color(0xFFE8E6DF) // primary text
-private val Slate = Color(0xFF77828C) // secondary text
-private val MeshGreen = Color(0xFF62D98A) // mesh status · verified traffic
-private val DmCyan = Color(0xFF57C7E3) // encrypted direct messages
-private val RescueOrange = Color(0xFFFF5A2D) // SOS. Nothing else is orange.
-private val SystemAmber = Color(0xFFE0A800) // app-generated notices — never sent over the mesh
+internal val Night = Color(0xFF0C1116) // instrument panel background
+internal val Panel = Color(0xFF131A21) // raised strips
+internal val Inkwell = Color(0xFF223039) // hairlines
+internal val Chalk = Color(0xFFE8E6DF) // primary text
+internal val Slate = Color(0xFF77828C) // secondary text
+internal val MeshGreen = Color(0xFF62D98A) // mesh status · verified traffic
+internal val DmCyan = Color(0xFF57C7E3) // encrypted direct messages
+internal val RescueOrange = Color(0xFFFF5A2D) // SOS. Nothing else is orange.
+internal val SystemAmber = Color(0xFFE0A800) // app-generated notices — never sent over the mesh
 
-private val Mono = FontFamily.Monospace
+internal val Mono = FontFamily.Monospace
 
 class MainActivity : ComponentActivity() {
 
+    // Unlocked in-process by the login/signup screen; never round-tripped through an
+    // Intent, so the private key never leaves this process's memory.
+    private var unlockedIdentity: Identity? = null
+
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
-            if (grants.values.all { it }) MeshForegroundService.start(this)
+            if (grants.values.all { it }) unlockedIdentity?.let { MeshForegroundService.start(this, it) }
         }
 
     private val photoPicker =
@@ -98,11 +110,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        ensurePermissionsAndStart()
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(background = Night, surface = Night)) {
                 Surface(modifier = Modifier.fillMaxSize(), color = Night) {
-                    MeshScreen(
+                    App(
+                        onUnlocked = { identity ->
+                            unlockedIdentity = identity
+                            ensurePermissionsAndStart()
+                        },
                         onPickPhoto = {
                             photoPicker.launch(
                                 PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
@@ -115,6 +130,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun ensurePermissionsAndStart() {
+        val identity = unlockedIdentity ?: return
         val needed = buildList {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 add(Manifest.permission.BLUETOOTH_SCAN)
@@ -130,105 +146,98 @@ class MainActivity : ComponentActivity() {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }
         if (missing.isEmpty()) {
-            MeshForegroundService.start(this)
+            MeshForegroundService.start(this, identity)
         } else {
             permissionLauncher.launch(missing.toTypedArray())
         }
     }
 }
 
-private enum class Tab { SIGNALS, ROSTER }
+/** Top-level screen switch: sign-up or login gates the mesh screen behind an unlocked identity. */
+@Composable
+private fun App(onUnlocked: (Identity) -> Unit, onPickPhoto: () -> Unit) {
+    val context = LocalContext.current
+    var unlocked by remember { mutableStateOf(false) }
+    var hasAccount by remember { mutableStateOf<Boolean?>(null) }
+    var signUpError by remember { mutableStateOf<String?>(null) }
+    var loginError by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(Unit) { hasAccount = IdentityStore.hasAccount(context) }
+
+    when {
+        unlocked -> MeshScreen(onPickPhoto = onPickPhoto)
+        hasAccount == null -> Box(Modifier.fillMaxSize().background(Night))
+        hasAccount == false -> SignUpScreen(
+            error = signUpError,
+            onSubmit = { username, password ->
+                runCatching { IdentityStore.signUp(context, username, password) }
+                    .onSuccess { identity ->
+                        signUpError = null
+                        unlocked = true
+                        onUnlocked(identity)
+                    }
+                    .onFailure { e -> signUpError = e.message ?: "Could not create account." }
+            },
+        )
+        else -> LoginScreen(
+            username = remember { IdentityStore.username(context).orEmpty() },
+            error = loginError,
+            onSubmit = { password ->
+                runCatching { IdentityStore.login(context, password) }
+                    .onSuccess { identity ->
+                        loginError = null
+                        unlocked = true
+                        onUnlocked(identity)
+                    }
+                    .onFailure { loginError = "Incorrect password." }
+            },
+        )
+    }
+}
+
+/**
+ * Which screen is showing. The default (and only "back" destination) is [ChatsList] — a list
+ * of conversations, like any normal chat app. There is deliberately no screen that shows every
+ * message ever received in one merged view; [Broadcast] and [Thread] are each scoped to one
+ * conversation, opened by tapping into it.
+ */
+private sealed class Screen {
+    data object ChatsList : Screen()
+    data object Broadcast : Screen()
+    data class Thread(val peerId: String) : Screen()
+}
 
 @Composable
 fun MeshScreen(onPickPhoto: () -> Unit) {
-    val messages by MeshRepository.messages.collectAsState()
     val running by MeshRepository.meshRunning.collectAsState()
-    var draft by remember { mutableStateOf("") }
-    var tab by remember { mutableStateOf(Tab.SIGNALS) }
+    var screen by remember { mutableStateOf<Screen>(Screen.ChatsList) }
 
-    Column(modifier = Modifier.fillMaxSize().background(Night)) {
-        InstrumentPanel()
-        TabBar(tab, onSelect = { tab = it })
-        when (tab) {
-            Tab.SIGNALS -> {
-                TransmissionLog(
-                    messages = messages,
-                    modifier = Modifier.weight(1f).fillMaxWidth(),
-                )
-                Composer(
-                    draft = draft,
-                    onDraftChange = { draft = it },
+    Column(
+        modifier = Modifier.fillMaxSize().background(Night).statusBarsPadding().navigationBarsPadding(),
+    ) {
+        Box(Modifier.weight(1f)) {
+            when (val s = screen) {
+                Screen.ChatsList -> Column(Modifier.fillMaxSize()) {
+                    InstrumentPanel()
+                    ChatsList(
+                        onOpenBroadcast = { screen = Screen.Broadcast },
+                        onOpenThread = { id -> screen = Screen.Thread(id) },
+                    )
+                }
+                Screen.Broadcast -> BroadcastScreen(
+                    onBack = { screen = Screen.ChatsList },
                     onPickPhoto = onPickPhoto,
-                    onSend = {
-                        val text = draft.trim()
-                        if (text.isNotEmpty()) {
-                            val service = MeshForegroundService.instance
-                            if (service == null) {
-                                // Rules out "the tap did nothing because the service died" —
-                                // this can never be silent now.
-                                MeshRepository.addMessage(
-                                    MeshRepository.ChatMessage(
-                                        fromId = "system",
-                                        text = "SEND FAILED - mesh service is not running. Restart the app.",
-                                        timestampMs = System.currentTimeMillis(),
-                                        mine = false,
-                                        system = true,
-                                    ),
-                                )
-                            } else {
-                                service.sendChat(text)
-                            }
-                            draft = ""
-                        }
-                    },
+                    enabled = running,
+                )
+                is Screen.Thread -> ThreadScreen(
+                    peerId = s.peerId,
+                    onBack = { screen = Screen.ChatsList },
                     enabled = running,
                 )
             }
-            Tab.ROSTER -> Roster(modifier = Modifier.weight(1f).fillMaxWidth())
         }
+        // Emergency broadcast is always one tap away, regardless of which conversation is open.
         SosBar(enabled = running)
-    }
-}
-
-@Composable
-private fun TabBar(selected: Tab, onSelect: (Tab) -> Unit) {
-    val peers by MeshRepository.peers.collectAsState()
-    val liveCount = peers.values.count { it.name != null }
-    Row(modifier = Modifier.fillMaxWidth().background(Night)) {
-        TabButton("SIGNALS", selected == Tab.SIGNALS, Modifier.weight(1f)) { onSelect(Tab.SIGNALS) }
-        TabButton(
-            if (liveCount > 0) "ROSTER ($liveCount)" else "ROSTER",
-            selected == Tab.ROSTER,
-            Modifier.weight(1f),
-        ) { onSelect(Tab.ROSTER) }
-    }
-    HairLine()
-}
-
-@Composable
-private fun TabButton(label: String, active: Boolean, modifier: Modifier, onClick: () -> Unit) {
-    Column(
-        modifier = modifier
-            .background(if (active) Panel else Night)
-            .clickable(onClick = onClick)
-            .padding(vertical = 11.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Text(
-            label,
-            color = if (active) Chalk else Slate,
-            fontFamily = Mono,
-            fontSize = 12.sp,
-            fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
-            letterSpacing = 1.5.sp,
-        )
-        Spacer(Modifier.height(6.dp))
-        Box(
-            Modifier
-                .height(2.dp)
-                .width(28.dp)
-                .background(if (active) MeshGreen else Color.Transparent),
-        )
     }
 }
 
@@ -251,7 +260,7 @@ private fun InstrumentPanel() {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                "MESHAID",
+                "PING",
                 color = Chalk,
                 fontFamily = Mono,
                 fontWeight = FontWeight.Black,
@@ -288,16 +297,6 @@ private fun InstrumentPanel() {
                 fontFamily = Mono,
                 fontSize = 11.sp,
                 letterSpacing = 1.sp,
-            )
-        }
-        val named = peers.values.mapNotNull { it.name }
-        if (named.isNotEmpty()) {
-            Spacer(Modifier.height(4.dp))
-            Text(
-                "IN RANGE: " + named.joinToString(" · "),
-                color = Chalk,
-                fontFamily = Mono,
-                fontSize = 11.sp,
             )
         }
         if (carrying > 0) {
@@ -341,9 +340,169 @@ private fun HairLine() {
     Box(Modifier.fillMaxWidth().height(1.dp).background(Inkwell))
 }
 
+// ---------------------------------------------------------------------------- chats list
+// The main screen — like any chat app's home screen, this is a list of conversations, never
+// a merged view of every message. One pinned row for the public mesh channel, then friends
+// (each a real 1:1 thread), then anyone nearby who isn't a friend yet.
+
+@Composable
+private fun ChatsList(modifier: Modifier = Modifier, onOpenBroadcast: () -> Unit, onOpenThread: (String) -> Unit) {
+    val messages by MeshRepository.messages.collectAsState()
+    val peers by MeshRepository.peers.collectAsState()
+    val friends by MeshRepository.friends.collectAsState()
+    val self by MeshRepository.selfLocation.collectAsState()
+    val now = System.currentTimeMillis()
+
+    val lastBroadcast = remember(messages) { messages.lastOrNull { !it.direct && !it.system } }
+    val friendRows = friends.entries
+        .map { (id, name) ->
+            val lastMsg = messages.lastOrNull { it.direct && it.peerId == id }
+            Triple(id, name, peers[id]) to lastMsg
+        }
+        .sortedByDescending { (row, lastMsg) -> lastMsg?.timestampMs ?: row.third?.lastSeenMs ?: 0L }
+    val nearby = peers.entries
+        .filter { (id, info) -> info.name != null && id !in friends }
+        .sortedByDescending { it.value.lastSeenMs }
+
+    LazyColumn(modifier = modifier.fillMaxWidth(), contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 6.dp)) {
+        item { BroadcastRow(lastMessage = lastBroadcast, onClick = onOpenBroadcast) }
+        if (friendRows.isNotEmpty()) {
+            item { SectionLabel("FRIENDS") }
+            items(friendRows) { (row, lastMsg) ->
+                val (id, name, live) = row
+                FriendRow(id, name, live, lastMsg, self, now, onClick = { onOpenThread(id) })
+            }
+        }
+        if (nearby.isNotEmpty()) {
+            item { SectionLabel("NEARBY — NOT YET ADDED") }
+            items(nearby) { (id, info) ->
+                NearbyRow(
+                    name = info.name!!,
+                    onAdd = { MeshForegroundService.instance?.addFriend(id, info.name) },
+                )
+            }
+        }
+        if (friendRows.isEmpty() && nearby.isEmpty()) {
+            item {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 40.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(
+                        "NO ONE ON THE MESH YET",
+                        color = Slate,
+                        fontFamily = Mono,
+                        fontSize = 12.sp,
+                        letterSpacing = 2.sp,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Wait for someone to come into range, then add them here to start chatting.",
+                        color = Slate.copy(alpha = 0.7f),
+                        fontSize = 13.sp,
+                        lineHeight = 18.sp,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BroadcastRow(lastMessage: MeshRepository.ChatMessage?, onClick: () -> Unit) {
+    val running by MeshRepository.meshRunning.collectAsState()
+    Row(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        StatusLamp(running)
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                "MESH BROADCAST",
+                color = Chalk,
+                fontFamily = Mono,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.sp,
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                lastMessage?.let { "${MeshRepository.displayName(it.fromId)}: ${it.text}".take(48) }
+                    ?: "public channel · everyone in range",
+                color = Slate,
+                fontFamily = Mono,
+                fontSize = 11.sp,
+                maxLines = 1,
+            )
+        }
+        lastMessage?.let {
+            Text(
+                remember(it.timestampMs) { SimpleDateFormat("HH:mm", Locale.US).format(Date(it.timestampMs)) },
+                color = Slate,
+                fontFamily = Mono,
+                fontSize = 11.sp,
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        Text("›", color = Slate, fontFamily = Mono, fontSize = 16.sp)
+    }
+    HairLine()
+}
+
+// ---------------------------------------------------------------------------- broadcast screen
+// The public mesh channel, on its own screen — opened from the pinned row in ChatsList, never
+// shown by default. No chat bubbles here: entries read as a radio operator's log, since this
+// is genuinely a shared channel everyone posts to, not a 1:1 conversation.
+
+@Composable
+private fun BroadcastScreen(onBack: () -> Unit, onPickPhoto: () -> Unit, enabled: Boolean) {
+    val messages by MeshRepository.messages.collectAsState()
+    val running by MeshRepository.meshRunning.collectAsState()
+    var draft by remember { mutableStateOf("") }
+
+    Column(Modifier.fillMaxSize()) {
+        ThreadHeaderRow(title = "MESH BROADCAST", online = running, onBack = onBack)
+        TransmissionLog(
+            messages = messages.filter { !it.direct },
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+        )
+        Composer(
+            draft = draft,
+            onDraftChange = { draft = it },
+            onPickPhoto = onPickPhoto,
+            showPhotoButton = true,
+            onSend = {
+                val text = draft.trim()
+                if (text.isNotEmpty()) {
+                    val service = MeshForegroundService.instance
+                    if (service == null) {
+                        // Rules out "the tap did nothing because the service died" —
+                        // this can never be silent now.
+                        MeshRepository.addMessage(
+                            MeshRepository.ChatMessage(
+                                fromId = "system",
+                                text = "SEND FAILED - mesh service is not running. Restart the app.",
+                                timestampMs = System.currentTimeMillis(),
+                                mine = false,
+                                system = true,
+                            ),
+                        )
+                    } else {
+                        service.sendChat(text)
+                    }
+                    draft = ""
+                }
+            },
+            enabled = enabled,
+        )
+    }
+}
+
 // ---------------------------------------------------------------------------- transmission log
 // No chat bubbles: entries read as a radio operator's log. The colored left rule is the
-// message's signal class — green verified traffic, cyan encrypted DM, orange SOS.
+// message's signal class — green verified traffic, orange SOS.
 
 @Composable
 private fun TransmissionLog(messages: List<MeshRepository.ChatMessage>, modifier: Modifier = Modifier) {
@@ -385,18 +544,14 @@ private fun LogEntry(msg: MeshRepository.ChatMessage) {
     val rule = when {
         msg.system -> SystemAmber
         msg.isSos -> RescueOrange
-        msg.direct -> DmCyan
         msg.mine -> Slate
         else -> MeshGreen
     }
     val time = remember(msg.timestampMs) {
         SimpleDateFormat("HH:mm", Locale.US).format(Date(msg.timestampMs))
     }
-    val sender = if (msg.system) "MESHAID" else if (msg.mine) "YOU" else MeshRepository.displayName(msg.fromId).uppercase()
-    val marks = buildString {
-        if (msg.direct) append("  DM")
-        if (msg.verified && !msg.mine) append("  ✓")
-    }
+    val sender = if (msg.system) "PING" else if (msg.mine) "YOU" else MeshRepository.displayName(msg.fromId).uppercase()
+    val marks = if (msg.verified && !msg.mine) "  ✓" else ""
 
     Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 5.dp)) {
         Box(
@@ -415,7 +570,6 @@ private fun LogEntry(msg: MeshRepository.ChatMessage) {
                     color = when {
                         msg.system -> SystemAmber
                         msg.isSos -> RescueOrange
-                        msg.direct -> DmCyan
                         msg.mine -> Slate
                         else -> Chalk
                     },
@@ -455,6 +609,138 @@ private fun LogEntry(msg: MeshRepository.ChatMessage) {
     }
 }
 
+// ---------------------------------------------------------------------------- friend threads
+// A dedicated 1:1 view per friend, opened by tapping their row in ChatsList — ordinary
+// chat-app shape (header + scrollback + composer), never mixed with anyone else's messages.
+
+@Composable
+private fun ThreadScreen(peerId: String, onBack: () -> Unit, enabled: Boolean) {
+    val messages by MeshRepository.messages.collectAsState()
+    val peers by MeshRepository.peers.collectAsState()
+    val friends by MeshRepository.friends.collectAsState()
+    var draft by remember { mutableStateOf("") }
+
+    val name = friends[peerId] ?: MeshRepository.displayName(peerId)
+    val liveInfo = peers[peerId]
+    val online = liveInfo != null && (System.currentTimeMillis() - liveInfo.lastSeenMs) < 40_000
+    val thread = remember(messages, peerId) {
+        messages.filter { it.direct && it.peerId == peerId }
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        ThreadHeaderRow(title = name.uppercase(), online = online, onBack = onBack)
+        ThreadLog(thread, modifier = Modifier.weight(1f).fillMaxWidth())
+        Composer(
+            draft = draft,
+            onDraftChange = { draft = it },
+            onPickPhoto = {},
+            showPhotoButton = false,
+            onSend = {
+                val text = draft.trim()
+                if (text.isNotEmpty()) {
+                    val service = MeshForegroundService.instance
+                    if (service == null) {
+                        MeshRepository.addMessage(
+                            MeshRepository.ChatMessage(
+                                fromId = "system",
+                                text = "SEND FAILED - mesh service is not running. Restart the app.",
+                                timestampMs = System.currentTimeMillis(),
+                                mine = false,
+                                system = true,
+                            ),
+                        )
+                    } else {
+                        service.sendDirectMessage(NodeId.parse(peerId), text)
+                    }
+                    draft = ""
+                }
+            },
+            enabled = enabled,
+        )
+    }
+}
+
+/** Shared header for any single-conversation screen (broadcast or a friend's thread). */
+@Composable
+private fun ThreadHeaderRow(title: String, online: Boolean, onBack: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().background(Panel).padding(horizontal = 10.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            "‹ CHATS",
+            color = MeshGreen,
+            fontFamily = Mono,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.sp,
+            modifier = Modifier.clickable(onClick = onBack).padding(end = 16.dp),
+        )
+        StatusLamp(online)
+        Spacer(Modifier.width(8.dp))
+        Text(
+            title,
+            color = Chalk,
+            fontFamily = Mono,
+            fontWeight = FontWeight.Bold,
+            fontSize = 15.sp,
+            letterSpacing = 1.sp,
+        )
+    }
+    HairLine()
+}
+
+@Composable
+private fun ThreadLog(messages: List<MeshRepository.ChatMessage>, modifier: Modifier = Modifier) {
+    if (messages.isEmpty()) {
+        Box(modifier = modifier, contentAlignment = Alignment.Center) {
+            Text(
+                "NO MESSAGES YET — SAY HI",
+                color = Slate,
+                fontFamily = Mono,
+                fontSize = 12.sp,
+                letterSpacing = 1.5.sp,
+            )
+        }
+        return
+    }
+    LazyColumn(
+        modifier = modifier,
+        reverseLayout = true,
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 8.dp, horizontal = 12.dp),
+    ) {
+        items(messages.asReversed()) { msg -> ThreadBubble(msg) }
+    }
+}
+
+@Composable
+private fun ThreadBubble(msg: MeshRepository.ChatMessage) {
+    val time = remember(msg.timestampMs) {
+        SimpleDateFormat("HH:mm", Locale.US).format(Date(msg.timestampMs))
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+        horizontalArrangement = if (msg.mine) Arrangement.End else Arrangement.Start,
+    ) {
+        Column(
+            modifier = Modifier
+                .widthIn(max = 280.dp)
+                .background(if (msg.mine) DmCyan.copy(alpha = 0.15f) else Panel, RoundedCornerShape(10.dp))
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+        ) {
+            Text(msg.text, color = Chalk, fontSize = 15.sp, lineHeight = 20.sp)
+            Spacer(Modifier.height(2.dp))
+            Row {
+                Text(time, color = Slate, fontFamily = Mono, fontSize = 10.sp)
+                if (msg.verified && !msg.mine) {
+                    Spacer(Modifier.width(6.dp))
+                    Text("✓", color = MeshGreen, fontFamily = Mono, fontSize = 10.sp)
+                }
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------- composer + SOS
 
 @Composable
@@ -464,28 +750,35 @@ private fun Composer(
     onPickPhoto: () -> Unit,
     onSend: () -> Unit,
     enabled: Boolean,
+    showPhotoButton: Boolean = true,
 ) {
     HairLine()
     Row(
         modifier = Modifier.fillMaxWidth().background(Panel).padding(horizontal = 10.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Button(
-            onClick = onPickPhoto,
-            enabled = enabled,
-            colors = ButtonDefaults.buttonColors(containerColor = Inkwell, contentColor = Chalk),
-            shape = RoundedCornerShape(6.dp),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp),
-        ) {
-            Text("IMG", fontFamily = Mono, fontSize = 12.sp, letterSpacing = 1.sp)
+        if (showPhotoButton) {
+            Button(
+                onClick = onPickPhoto,
+                enabled = enabled,
+                colors = ButtonDefaults.buttonColors(containerColor = Inkwell, contentColor = Chalk),
+                shape = RoundedCornerShape(6.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp),
+            ) {
+                Text("IMG", fontFamily = Mono, fontSize = 12.sp, letterSpacing = 1.sp)
+            }
+            Spacer(Modifier.width(8.dp))
         }
-        Spacer(Modifier.width(8.dp))
         OutlinedTextField(
             value = draft,
             onValueChange = onDraftChange,
             modifier = Modifier.weight(1f),
             placeholder = {
-                Text("message all · @name for private", color = Slate, fontSize = 13.sp)
+                Text(
+                    if (showPhotoButton) "message everyone on the mesh" else "message",
+                    color = Slate,
+                    fontSize = 13.sp,
+                )
             },
             colors = OutlinedTextFieldDefaults.colors(
                 focusedTextColor = Chalk,
@@ -544,40 +837,38 @@ private fun SosBar(enabled: Boolean) {
     }
 }
 
-// ---------------------------------------------------------------------------- roster
-// Everyone the mesh has heard from, freshest first. Uses the presence + GPS data already
-// flowing; exercise it from the laptop with `/loc <lat> <lon>`.
+// ---------------------------------------------------------------------------- roster rows
+// Privacy boundary: only friends (explicitly added, see FriendStore) get a persistent row
+// with their location history and a chat thread. Everyone else nearby shows up in a
+// separate "not yet added" section with a name and nothing else, until you choose to add
+// them — a stranger's exact location is never surfaced just because they're in radio range.
 
 @Composable
-private fun Roster(modifier: Modifier = Modifier) {
-    val peers by MeshRepository.peers.collectAsState()
-    val self by MeshRepository.selfLocation.collectAsState()
-    val now = System.currentTimeMillis()
-    val roster = peers.values.filter { it.name != null }.sortedByDescending { it.lastSeenMs }
-
-    if (roster.isEmpty()) {
-        Box(modifier = modifier, contentAlignment = Alignment.Center) {
-            Text(
-                "NO ONE ON THE MESH YET",
-                color = Slate,
-                fontFamily = Mono,
-                fontSize = 12.sp,
-                letterSpacing = 2.sp,
-            )
-        }
-        return
-    }
-    LazyColumn(modifier = modifier, contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 6.dp)) {
-        items(roster) { peer -> RosterRow(peer, self, now) }
-    }
+private fun SectionLabel(text: String) {
+    Text(
+        text,
+        color = Slate,
+        fontFamily = Mono,
+        fontSize = 10.sp,
+        letterSpacing = 2.sp,
+        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+    )
 }
 
 @Composable
-private fun RosterRow(peer: MeshRepository.PeerInfo, self: Pair<Double, Double>?, now: Long) {
-    val ageSec = ((now - peer.lastSeenMs) / 1000).coerceAtLeast(0)
-    val fresh = ageSec < 40 // within the presence-expiry window
+private fun FriendRow(
+    id: String,
+    name: String,
+    live: MeshRepository.PeerInfo?,
+    lastMessage: MeshRepository.ChatMessage?,
+    self: Pair<Double, Double>?,
+    now: Long,
+    onClick: () -> Unit,
+) {
+    val ageSec = live?.let { ((now - it.lastSeenMs) / 1000).coerceAtLeast(0) }
+    val fresh = ageSec != null && ageSec < 40 // within the presence-expiry window
     Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 9.dp),
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(Modifier.size(8.dp).background(if (fresh) MeshGreen else Slate, CircleShape))
@@ -585,35 +876,76 @@ private fun RosterRow(peer: MeshRepository.PeerInfo, self: Pair<Double, Double>?
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    peer.name!!.uppercase(),
+                    name.uppercase(),
                     color = Chalk,
                     fontFamily = Mono,
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Bold,
                     letterSpacing = 1.sp,
                 )
-                if (peer.verified) {
+                if (live?.verified == true) {
                     Spacer(Modifier.width(8.dp))
-                    Text("✓ VERIFIED", color = MeshGreen, fontFamily = Mono, fontSize = 10.sp, letterSpacing = 1.sp)
+                    Text("✓", color = MeshGreen, fontFamily = Mono, fontSize = 11.sp)
                 }
-            }
-            val locLine = when {
-                peer.lat != null && peer.lon != null && self != null -> {
-                    val km = haversineKm(self.first, self.second, peer.lat, peer.lon)
-                    "%.5f, %.5f  ·  %s away".format(peer.lat, peer.lon, formatDistance(km))
-                }
-                peer.lat != null && peer.lon != null -> "%.5f, %.5f".format(peer.lat, peer.lon)
-                else -> "location unknown"
             }
             Spacer(Modifier.height(2.dp))
-            Text(locLine, color = Slate, fontFamily = Mono, fontSize = 11.sp)
+            val preview = when {
+                lastMessage != null -> (if (lastMessage.mine) "You: " else "") + lastMessage.text
+                live?.lat != null && live.lon != null && self != null -> {
+                    val km = haversineKm(self.first, self.second, live.lat, live.lon)
+                    "%.5f, %.5f  ·  %s away".format(live.lat, live.lon, formatDistance(km))
+                }
+                fresh -> "in range — say hi"
+                else -> "not in range"
+            }
+            Text(preview, color = Slate, fontFamily = Mono, fontSize = 11.sp, maxLines = 1)
         }
         Text(
-            if (ageSec < 5) "now" else if (ageSec < 90) "${ageSec}s ago" else "${ageSec / 60}m ago",
+            when {
+                lastMessage != null -> SimpleDateFormat("HH:mm", Locale.US).format(Date(lastMessage.timestampMs))
+                ageSec == null -> "—"
+                ageSec < 5 -> "now"
+                ageSec < 90 -> "${ageSec}s ago"
+                else -> "${ageSec / 60}m ago"
+            },
             color = if (fresh) Slate else Slate.copy(alpha = 0.6f),
             fontFamily = Mono,
             fontSize = 11.sp,
         )
+        Spacer(Modifier.width(8.dp))
+        Text("›", color = Slate, fontFamily = Mono, fontSize = 16.sp)
+    }
+    HairLine()
+}
+
+@Composable
+private fun NearbyRow(name: String, onAdd: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(8.dp).background(MeshGreen, CircleShape))
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                name.uppercase(),
+                color = Chalk,
+                fontFamily = Mono,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.sp,
+            )
+            Spacer(Modifier.height(2.dp))
+            Text("in range · not a friend yet", color = Slate, fontFamily = Mono, fontSize = 11.sp)
+        }
+        Button(
+            onClick = onAdd,
+            colors = ButtonDefaults.buttonColors(containerColor = MeshGreen, contentColor = Night),
+            shape = RoundedCornerShape(6.dp),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+        ) {
+            Text("ADD", fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = 12.sp, letterSpacing = 1.sp)
+        }
     }
     HairLine()
 }

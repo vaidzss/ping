@@ -23,6 +23,8 @@ object MeshRepository {
         val direct: Boolean = false,
         /** App-generated notice (e.g. "no peer named X") — never sent over the mesh. */
         val system: Boolean = false,
+        /** The other party's NodeId for a direct message, regardless of direction — threads the conversation. */
+        val peerId: String? = null,
     )
 
     data class PeerInfo(
@@ -48,6 +50,14 @@ object MeshRepository {
 
     private val _selfCallsign = MutableStateFlow("—")
     val selfCallsign: StateFlow<String> = _selfCallsign.asStateFlow()
+
+    /** id -> name. The privacy boundary for the Roster — see [dev.meshaid.app.service.FriendStore]. */
+    private val _friends = MutableStateFlow<Map<String, String>>(emptyMap())
+    val friends: StateFlow<Map<String, String>> = _friends.asStateFlow()
+
+    fun setFriends(map: Map<String, String>) {
+        _friends.value = map
+    }
 
     /** Bundles this phone is carrying for other people (the data-mule stat). */
     private val _carryingCount = MutableStateFlow(0)

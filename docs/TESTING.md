@@ -1,4 +1,4 @@
-# Testing MeshAid with only ONE phone
+# Testing Ping with only ONE phone
 
 You don't need two phones. Three options, easiest first.
 
@@ -19,14 +19,22 @@ The laptop runs the same mesh core as the app, over the LAN lane.
    .\gradlew.bat :tools:node:run --console=plain -q
    ```
    (Windows Firewall may ask once — allow on private networks.)
-4. **Open the app**, grant permissions. Within ~10 seconds the laptop prints
-   `* MeshAid-xxxxxx joined the mesh` and the app's peer count goes to 1.
+4. **Open the app.** First launch asks you to create an identity: pick a callsign and a
+   password (8+ characters) — this is entirely local, there is no account server; see
+   [SECURITY.md](SECURITY.md) for exactly what the password protects. Subsequent
+   launches ask for that password to unlock the identity instead. After unlocking, grant
+   the requested permissions. Within ~10 seconds the laptop prints
+   `* Ping-xxxxxx joined the mesh` (or your chosen callsign) and the app's peer count
+   goes to 1.
 5. **Test everything:**
-   - Type in the laptop console → appears in the app; send from the app → prints on the laptop.
-     Both directions should show **✓** (signature verified against the announced identity key).
-   - **Encrypted DM:** in the app type `@<laptop-name> hello` (the laptop prints its name at
-     startup; it also appears in the green peers strip). Laptop replies `@<your-app-name> hi`.
-     DMs show a blue bubble + 🔒 in the app, `[encrypted DM] ✓` on the laptop.
+   - Type in the laptop console → appears in the app's SIGNALS tab; send from the app → prints
+     on the laptop. Both directions should show **✓** (signature verified against the
+     announced identity key).
+   - **Encrypted DM:** open the app's ROSTER tab — the laptop appears under "NEARBY — NOT YET
+     ADDED" (the laptop prints its own name at startup). Tap **ADD**, then tap the row to open
+     its thread and type a message. On the laptop, reply with `@<your-app-name> hi`. Thread
+     messages show verified (✓) once the laptop's key has propagated; the laptop console shows
+     `[encrypted DM] ✓`.
    - App **SOS** button → laptop prints `!!! SOS ... !!!` with the GPS fix.
    - Laptop `/loc 26.9124 75.7873` → sends a synthetic GPS beacon (feeds the app's peer map).
    - App **📷** → photo lands in `%USERPROFILE%\.meshaid\received\`.

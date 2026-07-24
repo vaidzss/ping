@@ -295,7 +295,13 @@ class MeshNode(
 
     private fun storeAsBundle(packet: Packet) {
         val store = bundleStore ?: return
-        if (!packet.isBroadcast) return
+        // Recipient-addressed CHAT (i.e. every DM) used to be excluded here on the theory
+        // that DTN bundling was a broadcast-only concern. In practice this meant: send a DM
+        // at the exact moment the LAN/BLE link to the recipient is down (a transient
+        // disconnect, not "recipient unreachable for hours") and transport.broadcast() has
+        // zero peers to write to — a silent no-op, not an error, so nothing ever reported it
+        // — and the DM was gone for good, with no retry and no trace. DMs are exactly the
+        // case store-carry-forward exists for; there's no reason to special-case them out.
         if (packet.type != PacketType.CHAT && packet.type != PacketType.SOS) return
         store.add(
             Bundle(

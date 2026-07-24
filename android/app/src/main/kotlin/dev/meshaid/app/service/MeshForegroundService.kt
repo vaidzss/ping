@@ -21,9 +21,11 @@ import dev.meshaid.core.MeshMessage
 import dev.meshaid.core.MeshNode
 import dev.meshaid.core.blob.BlobStore
 import dev.meshaid.core.crypto.Identity
+import dev.meshaid.core.crypto.StorageVault
 import dev.meshaid.core.dtn.BundleStore
 import dev.meshaid.core.media.MimeTag
 import dev.meshaid.core.protocol.GpsBeacon
+import dev.meshaid.core.protocol.NodeId
 import dev.meshaid.core.protocol.Packet
 import dev.meshaid.core.protocol.PacketType
 import dev.meshaid.core.transport.CompositeMeshTransport
@@ -54,7 +56,13 @@ class MeshForegroundService : Service() {
         var instance: MeshForegroundService? = null
             private set
 
-        fun start(context: Context) {
+        // Handed off in-process from the just-unlocked login/signup screen, never through
+        // an Intent extra — the private key material never needs to leave the process.
+        @Volatile
+        private var pendingIdentity: Identity? = null
+
+        fun start(context: Context, identity: Identity) {
+            pendingIdentity = identity
             context.startForegroundService(Intent(context, MeshForegroundService::class.java))
         }
     }
@@ -77,8 +85,16 @@ class MeshForegroundService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        val unlocked = pendingIdentity
+        if (unlocked == null) {
+            // Can happen if Android restarts the service after the process was killed —
+            // there's no unlocked key to run with until the user logs in again.
+            stopSelf()
+            return
+        }
+        pendingIdentity = null
+        identity = unlocked
         instance = this
-        identity = IdentityStore.loadOrCreate(this)
         bleLane = BleMeshTransport(this, identity.nodeId)
         lanLane = LanMeshTransport(identity.nodeId)
         lanLane.onDiagnostic = { message ->
@@ -98,10 +114,18 @@ class MeshForegroundService : Service() {
                 setReferenceCounted(false)
                 acquire()
             }
-        blobStore = BlobStore(filesDir.resolve("blobs").toPath())
-        messageLog = MessageLog(filesDir.resolve("messages.jsonl"))
+        // One key, derived once from the unlocked identity (not the password — see
+        // StorageVault's doc comment), used to encrypt everything this device persists locally.
+        val storageKey = StorageVault.deriveKey(identity)
+        blobStore = BlobStore(
+            filesDir.resolve("blobs").toPath(),
+            seal = { StorageVault.seal(it, storageKey) },
+            open = { StorageVault.open(it, storageKey) },
+        )
+        messageLog = MessageLog(filesDir.resolve("messages.jsonl"), storageKey)
         MeshRepository.seedHistory(messageLog.load())
         MeshRepository.setSelfCallsign(displayName())
+        MeshRepository.setFriends(FriendStore.load(this))
         val bundles = BundleStore(System::currentTimeMillis)
         bundleStore = bundles
         node = MeshNode(
@@ -208,44 +232,19 @@ class MeshForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     fun displayName(): String =
-        getSharedPreferences("meshaid_profile", MODE_PRIVATE)
-            .getString("display_name", null) ?: "MeshAid-${identity.nodeId.toString().take(6)}"
+        IdentityStore.username(this) ?: "Ping-${identity.nodeId.toString().take(6)}"
 
-    /** Broadcast chat — or an encrypted DM when the text is "@name message". */
-    fun sendChat(text: String) {
-        if (text.startsWith("@")) {
-            val space = text.indexOf(' ')
-            val target = if (space > 1) text.substring(1, space) else ""
-            val body = if (space > 1) text.substring(space + 1).trim() else ""
-            val match = node.directory.byName(target)
-            if (match == null || body.isEmpty()) {
-                val known = node.directory.knownNames().values
-                val hint = if (known.isEmpty()) "No identities learned yet — wait for a peer to appear."
-                else "Known peers you can DM: ${known.joinToString(", ")}"
-                MeshRepository.addMessage(
-                    MeshRepository.ChatMessage(
-                        fromId = "system",
-                        text = if (match == null) "DM NOT SENT — no peer named \"$target\". $hint"
-                        else "Usage: @name message",
-                        timestampMs = System.currentTimeMillis(),
-                        mine = false,
-                        system = true,
-                    ),
-                )
-                return
-            }
-            val packet = node.sendDirectChat(match.first, body)
-            record(
-                MeshRepository.ChatMessage(
-                    fromId = identity.nodeId.toString(),
-                    text = "@${match.second.name}: $body",
-                    timestampMs = packet.timestampMs,
-                    mine = true,
-                    direct = true,
-                ),
-            )
-            return
-        }
+    /**
+     * Broadcast chat only — DMs go through [sendDirectMessage] via a friend's own thread now,
+     * so there's no "@name" command left to parse here. Called directly from a Compose
+     * onClick (main thread); `node.send()` ends up doing a blocking transport socket write
+     * (`LanMeshTransport.PeerLink.sendFrame`), which Android forbids on the main thread — it
+     * used to throw `NetworkOnMainThreadException` right there, silently killing the LAN link
+     * on *every* chat/DM/SOS send while photos (already routed through `scope.launch` in
+     * `sendImage`) worked fine. Dispatch here, not at each call site, so nothing can regress
+     * this by forgetting to.
+     */
+    fun sendChat(text: String) = scope.launch {
         val packet = node.send(PacketType.CHAT, text.toByteArray())
         record(
             MeshRepository.ChatMessage(
@@ -257,7 +256,28 @@ class MeshForegroundService : Service() {
         )
     }
 
-    fun sendSos(note: String) {
+    /** Encrypted 1:1 message to a specific friend — the composer inside their thread screen. */
+    fun sendDirectMessage(peerId: NodeId, body: String) = scope.launch {
+        val packet = node.sendDirectChat(peerId, body)
+        record(
+            MeshRepository.ChatMessage(
+                fromId = identity.nodeId.toString(),
+                text = body,
+                timestampMs = packet.timestampMs,
+                mine = true,
+                direct = true,
+                peerId = peerId.toString(),
+            ),
+        )
+    }
+
+    /** Adds a nearby peer as a friend — the only thing that makes them appear in the Roster. */
+    fun addFriend(id: String, name: String) {
+        FriendStore.add(this, id, name)
+        MeshRepository.setFriends(FriendStore.load(this))
+    }
+
+    fun sendSos(note: String) = scope.launch {
         val beacon = bestEffortBeacon()
         val payload = beacon.encode() + note.toByteArray()
         val packet = node.send(PacketType.SOS, payload)
@@ -327,6 +347,7 @@ class MeshForegroundService : Service() {
                     mine = false,
                     verified = message.verified,
                     direct = message.direct,
+                    peerId = if (message.direct) packet.senderId.toString() else null,
                 ),
             )
             PacketType.SOS -> {
@@ -387,7 +408,7 @@ class MeshForegroundService : Service() {
             NotificationChannel(CHANNEL_ID, "Mesh relay", NotificationManager.IMPORTANCE_LOW),
         )
         val notification = Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle("MeshAid mesh active")
+            .setContentTitle("Ping mesh active")
             .setContentText("Relaying messages for people nearby — no internet needed")
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setOngoing(true)

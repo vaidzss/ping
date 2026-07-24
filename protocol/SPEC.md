@@ -1,4 +1,4 @@
-# MeshAid Wire Protocol — v1
+# Ping Wire Protocol — v1
 
 Binary, fixed-header packet format for the BLE control lane. Design goals: tiny (BLE-friendly),
 uniform-size on the wire (traffic-analysis resistance — Bridgefy's plaintext-ID mistake is the

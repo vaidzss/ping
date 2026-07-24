@@ -16,7 +16,7 @@ import kotlin.concurrent.thread
 import kotlin.system.exitProcess
 
 /**
- * MeshAid desktop node: the same mesh core the Android app runs, over the LAN lane.
+ * Ping desktop node: the same mesh core the Android app runs, over the LAN lane.
  * Lets a laptop join the mesh so the app can be exercised with a single phone
  * (phone hotspot + laptop = a real two-node mesh with zero internet).
  *
@@ -113,7 +113,7 @@ fun main(args: Array<String>) {
     }
 
     node.start()
-    println("MeshAid node '$name' up - id ${identity.nodeId}, LAN port ${transport.port}")
+    println("Ping node '$name' up - id ${identity.nodeId}, LAN port ${transport.port}")
     println("Local addresses: ${transport.localAddresses().joinToString().ifEmpty { "NONE - not connected to any network?" }}")
     println("Join the phone's hotspot (or same Wi-Fi).")
     println("Commands: @name <msg> (encrypted DM), /sos <note>, /photo <path>, /loc <lat> <lon>, /peers, /quit")

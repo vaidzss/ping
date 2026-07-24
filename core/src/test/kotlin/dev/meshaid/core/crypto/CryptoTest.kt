@@ -85,4 +85,57 @@ class CryptoTest {
         assertContentEquals(card.dhPublic, parsed.dhPublic)
         assertEquals(identity.nodeId, parsed.nodeId)
     }
+
+    @Test
+    fun `password vault round trips the identity`() {
+        val identity = Identity.generate()
+        val sealed = PasswordVault.seal(identity.exportPrivate(), "correct horse battery staple")
+        val restored = Identity.importPrivate(PasswordVault.open(sealed, "correct horse battery staple"))
+        assertEquals(identity.nodeId, restored.nodeId)
+    }
+
+    @Test
+    fun `password vault rejects the wrong password`() {
+        val identity = Identity.generate()
+        val sealed = PasswordVault.seal(identity.exportPrivate(), "correct horse battery staple")
+        assertFailsWith<PasswordVault.WrongPasswordException> { PasswordVault.open(sealed, "wrong guess") }
+    }
+
+    @Test
+    fun `password vault salts every seal differently`() {
+        val identity = Identity.generate()
+        val a = PasswordVault.seal(identity.exportPrivate(), "same password")
+        val b = PasswordVault.seal(identity.exportPrivate(), "same password")
+        assertFalse(a.contentEquals(b), "salt must differ per seal even for the same password")
+    }
+
+    @Test
+    fun `storage vault round trips repeated seals under one key`() {
+        val identity = Identity.generate()
+        val key = StorageVault.deriveKey(identity)
+        val a = StorageVault.seal("first message".toByteArray(), key)
+        val b = StorageVault.seal("second message".toByteArray(), key)
+        assertContentEquals("first message".toByteArray(), StorageVault.open(a, key))
+        assertContentEquals("second message".toByteArray(), StorageVault.open(b, key))
+    }
+
+    @Test
+    fun `storage vault nonces never repeat under the same key`() {
+        val key = StorageVault.deriveKey(Identity.generate())
+        val a = StorageVault.seal("same plaintext".toByteArray(), key)
+        val b = StorageVault.seal("same plaintext".toByteArray(), key)
+        assertFalse(a.contentEquals(b), "nonce must differ per seal — this key is reused across many messages")
+    }
+
+    @Test
+    fun `storage vault rejects the wrong key`() {
+        val sealed = StorageVault.seal("secret".toByteArray(), StorageVault.deriveKey(Identity.generate()))
+        assertFailsWith<CryptoException> { StorageVault.open(sealed, StorageVault.deriveKey(Identity.generate())) }
+    }
+
+    @Test
+    fun `storage vault key is stable for the same identity`() {
+        val identity = Identity.generate()
+        assertContentEquals(StorageVault.deriveKey(identity), StorageVault.deriveKey(identity))
+    }
 }

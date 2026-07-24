@@ -16,6 +16,9 @@ value class NodeId(val raw: Long) {
             require(bytes.size - offset >= 8) { "need 8 bytes for NodeId" }
             return NodeId(ByteBuffer.wrap(bytes, offset, 8).long)
         }
+
+        /** Inverse of [toString] — round-trips a NodeId through UI state/persistence as hex. */
+        fun parse(hex: String): NodeId = NodeId(java.lang.Long.parseUnsignedLong(hex, 16))
     }
 }
 

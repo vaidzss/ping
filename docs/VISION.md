@@ -1,8 +1,8 @@
-# MeshAid — Vision & Roadmap
+# Ping — Vision & Roadmap
 
 ## What this is
 
-MeshAid lets people **chat, share live GPS location, and send images/videos with no internet, no cellular, no servers** — built for disaster zones (floods, earthquakes) and areas where connectivity is shut down, when communication matters most.
+Ping lets people **chat, share live GPS location, and send images/videos with no internet, no cellular, no servers** — built for disaster zones (floods, earthquakes) and areas where connectivity is shut down, when communication matters most.
 
 Every phone running the app is a node: messages hop phone-to-phone over Bluetooth LE, media moves over on-demand Wi-Fi links, and every device carries messages forward for others (store-carry-forward). Optional ~$30 LoRa radios extend text/GPS range to kilometers.
 
@@ -17,7 +17,7 @@ Every phone running the app is a node: messages hop phone-to-phone over Bluetoot
 
 ## Later: civic reporting & legal aid for India (Phase 6)
 
-Once the mesh works, MeshAid grows a second, **online** tier — a platform for India where people can:
+Once the mesh works, Ping grows a second, **online** tier — a platform for India where people can:
 
 - **Report injustice live** — record what happened (text, photo, video) as it happens, even offline. Evidence is captured, hashed, and cryptographically signed on-device the moment it's recorded.
 - **Upload when any connectivity appears** — the same store-carry-forward queue that relays emergency messages syncs reports up to the platform opportunistically.
