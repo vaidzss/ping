@@ -25,6 +25,7 @@ import dev.meshaid.core.crypto.Identity
 import dev.meshaid.core.crypto.StorageVault
 import dev.meshaid.core.dtn.BundleStore
 import dev.meshaid.core.media.MimeTag
+import dev.meshaid.core.mesh.BeaconThrottle
 import dev.meshaid.core.protocol.GpsBeacon
 import dev.meshaid.core.protocol.NodeId
 import dev.meshaid.core.protocol.Packet
@@ -78,6 +79,7 @@ class MeshForegroundService : Service() {
     lateinit var blobStore: BlobStore
         private set
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val beaconThrottle = BeaconThrottle()
 
     private fun record(message: MeshRepository.ChatMessage) {
         messageLog.append(message)
@@ -129,10 +131,22 @@ class MeshForegroundService : Service() {
         MeshRepository.setFriends(FriendStore.load(this))
         val bundles = BundleStore(System::currentTimeMillis)
         bundleStore = bundles
+        val transport = CompositeMeshTransport(listOf(bleLane, lanLane))
+        transport.onDiagnostic = { message ->
+            MeshRepository.addMessage(
+                MeshRepository.ChatMessage(
+                    fromId = "system",
+                    text = "TRANSPORT: $message",
+                    timestampMs = System.currentTimeMillis(),
+                    mine = false,
+                    system = true,
+                ),
+            )
+        }
         node = MeshNode(
             selfId = identity.nodeId,
             clock = System::currentTimeMillis,
-            transport = CompositeMeshTransport(listOf(bleLane, lanLane)),
+            transport = transport,
             bundleStore = bundles,
             blobStore = blobStore,
             identity = identity,
@@ -213,7 +227,11 @@ class MeshForegroundService : Service() {
                 delay(BEACON_INTERVAL_MS)
                 bestEffortBeacon().takeIf { it.latE7 != 0 || it.lonE7 != 0 }?.let {
                     MeshRepository.setSelfLocation(it.lat, it.lon)
-                    node.send(PacketType.GPS_BEACON, it.encode())
+                    // A stationary phone re-broadcasting an unchanged fix on a fixed timer
+                    // costs every relay hop across the mesh, not just this device.
+                    if (beaconThrottle.shouldSend(System.currentTimeMillis(), it.lat, it.lon)) {
+                        node.send(PacketType.GPS_BEACON, it.encode())
+                    }
                 }
             }
         }
@@ -314,7 +332,19 @@ class MeshForegroundService : Service() {
     /** Downscale + recompress a picked image and offer it to the mesh. */
     fun sendImage(uri: Uri) {
         scope.launch {
-            val jpeg = runCatching { compressForMesh(uri) }.getOrNull() ?: return@launch
+            val jpeg = runCatching { compressForMesh(uri) }
+                .onFailure { e ->
+                    MeshRepository.addMessage(
+                        MeshRepository.ChatMessage(
+                            fromId = "system",
+                            text = "Couldn't prepare that image for the mesh: ${e.message}",
+                            timestampMs = System.currentTimeMillis(),
+                            mine = false,
+                            system = true,
+                        ),
+                    )
+                }
+                .getOrNull() ?: return@launch
             val hash = node.offerMedia(jpeg, MimeTag.JPEG)
             record(
                 MeshRepository.ChatMessage(
