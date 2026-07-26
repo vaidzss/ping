@@ -57,7 +57,12 @@ internal fun MapScreen(onBack: () -> Unit) {
     val peers by MeshRepository.peers.collectAsState()
     val friends by MeshRepository.friends.collectAsState()
     val self by MeshRepository.selfLocation.collectAsState()
-    val now = System.currentTimeMillis()
+    val now by androidx.compose.runtime.produceState(initialValue = System.currentTimeMillis()) {
+        while (true) {
+            kotlinx.coroutines.delay(1_000)
+            value = System.currentTimeMillis()
+        }
+    }
 
     val contacts = remember(peers, friends, self, now) {
         val (selfLat, selfLon) = self ?: return@remember emptyList()
