@@ -31,6 +31,7 @@ class MessageLog(private val file: File, private val key: ByteArray) {
                 .put("mine", message.mine)
                 .put("sos", message.isSos)
                 .put("image", message.imageHash ?: JSONObject.NULL)
+                .put("video", message.videoHash ?: JSONObject.NULL)
                 .put("verified", message.verified)
                 .put("direct", message.direct)
                 .put("peer", message.peerId ?: JSONObject.NULL)
@@ -54,6 +55,7 @@ class MessageLog(private val file: File, private val key: ByteArray) {
                         mine = json.getBoolean("mine"),
                         isSos = json.optBoolean("sos"),
                         imageHash = json.optString("image").takeIf { it.isNotEmpty() && it != "null" },
+                        videoHash = json.optString("video").takeIf { it.isNotEmpty() && it != "null" },
                         verified = json.optBoolean("verified"),
                         direct = json.optBoolean("direct"),
                         peerId = json.optString("peer").takeIf { it.isNotEmpty() && it != "null" },

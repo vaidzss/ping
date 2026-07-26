@@ -3,8 +3,10 @@ package dev.meshaid.app
 import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.widget.VideoView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.PickVisualMediaRequest
@@ -68,6 +70,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
@@ -76,6 +79,7 @@ import dev.meshaid.app.service.MeshForegroundService
 import dev.meshaid.core.crypto.ContactCard
 import dev.meshaid.core.crypto.Identity
 import dev.meshaid.core.protocol.NodeId
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -111,6 +115,11 @@ class MainActivity : ComponentActivity() {
             uri?.let { MeshForegroundService.instance?.sendImage(it) }
         }
 
+    private val videoPicker =
+        registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+            uri?.let { MeshForegroundService.instance?.sendVideo(it) }
+        }
+
     // CaptureActivity (from zxing-android-embedded) requests CAMERA itself if not yet
     // granted — no separate runtime-permission plumbing needed here.
     private val qrScanLauncher = registerForActivityResult(ScanContract()) { result ->
@@ -138,6 +147,11 @@ class MainActivity : ComponentActivity() {
                         onPickPhoto = {
                             photoPicker.launch(
                                 PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                            )
+                        },
+                        onPickVideo = {
+                            videoPicker.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly),
                             )
                         },
                         onScanContact = {
@@ -181,7 +195,7 @@ class MainActivity : ComponentActivity() {
 
 /** Top-level screen switch: sign-up or login gates the mesh screen behind an unlocked identity. */
 @Composable
-private fun App(onUnlocked: (Identity) -> Unit, onPickPhoto: () -> Unit, onScanContact: () -> Unit) {
+private fun App(onUnlocked: (Identity) -> Unit, onPickPhoto: () -> Unit, onPickVideo: () -> Unit, onScanContact: () -> Unit) {
     val context = LocalContext.current
     var unlocked by remember { mutableStateOf(false) }
     var hasAccount by remember { mutableStateOf<Boolean?>(null) }
@@ -191,7 +205,7 @@ private fun App(onUnlocked: (Identity) -> Unit, onPickPhoto: () -> Unit, onScanC
     LaunchedEffect(Unit) { hasAccount = IdentityStore.hasAccount(context) }
 
     when {
-        unlocked -> MeshScreen(onPickPhoto = onPickPhoto, onScanContact = onScanContact)
+        unlocked -> MeshScreen(onPickPhoto = onPickPhoto, onPickVideo = onPickVideo, onScanContact = onScanContact)
         hasAccount == null -> Box(Modifier.fillMaxSize().background(Night))
         hasAccount == false -> SignUpScreen(
             error = signUpError,
@@ -235,7 +249,7 @@ private sealed class Screen {
 }
 
 @Composable
-fun MeshScreen(onPickPhoto: () -> Unit, onScanContact: () -> Unit) {
+fun MeshScreen(onPickPhoto: () -> Unit, onPickVideo: () -> Unit, onScanContact: () -> Unit) {
     val running by MeshRepository.meshRunning.collectAsState()
     var screen by remember { mutableStateOf<Screen>(Screen.ChatsList) }
 
@@ -267,6 +281,7 @@ fun MeshScreen(onPickPhoto: () -> Unit, onScanContact: () -> Unit) {
                 Screen.Broadcast -> BroadcastScreen(
                     onBack = { screen = Screen.ChatsList },
                     onPickPhoto = onPickPhoto,
+                    onPickVideo = onPickVideo,
                     enabled = running,
                 )
                 is Screen.Thread -> ThreadScreen(
@@ -529,7 +544,7 @@ private fun MyQrRow(onClick: () -> Unit) {
 // is genuinely a shared channel everyone posts to, not a 1:1 conversation.
 
 @Composable
-private fun BroadcastScreen(onBack: () -> Unit, onPickPhoto: () -> Unit, enabled: Boolean) {
+private fun BroadcastScreen(onBack: () -> Unit, onPickPhoto: () -> Unit, onPickVideo: () -> Unit, enabled: Boolean) {
     val messages by MeshRepository.messages.collectAsState()
     val running by MeshRepository.meshRunning.collectAsState()
     var draft by remember { mutableStateOf("") }
@@ -544,6 +559,7 @@ private fun BroadcastScreen(onBack: () -> Unit, onPickPhoto: () -> Unit, enabled
             draft = draft,
             onDraftChange = { draft = it },
             onPickPhoto = onPickPhoto,
+            onPickVideo = onPickVideo,
             showPhotoButton = true,
             onSend = {
                 val text = draft.trim()
@@ -667,6 +683,10 @@ private fun LogEntry(msg: MeshRepository.ChatMessage) {
                     Text("photo unavailable", color = Slate, fontFamily = Mono, fontSize = 12.sp)
                 }
             }
+            msg.videoHash?.let { hash ->
+                Spacer(Modifier.height(4.dp))
+                VideoBubble(hash)
+            }
             if (msg.text.isNotEmpty()) {
                 Spacer(Modifier.height(2.dp))
                 Text(
@@ -706,6 +726,7 @@ private fun ThreadScreen(peerId: String, onBack: () -> Unit, enabled: Boolean) {
             draft = draft,
             onDraftChange = { draft = it },
             onPickPhoto = {},
+            onPickVideo = {},
             showPhotoButton = false,
             onSend = {
                 val text = draft.trim()
@@ -820,6 +841,7 @@ private fun Composer(
     draft: String,
     onDraftChange: (String) -> Unit,
     onPickPhoto: () -> Unit,
+    onPickVideo: () -> Unit,
     onSend: () -> Unit,
     enabled: Boolean,
     showPhotoButton: Boolean = true,
@@ -838,6 +860,16 @@ private fun Composer(
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp),
             ) {
                 Text("IMG", fontFamily = Mono, fontSize = 12.sp, letterSpacing = 1.sp)
+            }
+            Spacer(Modifier.width(6.dp))
+            Button(
+                onClick = onPickVideo,
+                enabled = enabled,
+                colors = ButtonDefaults.buttonColors(containerColor = Inkwell, contentColor = Chalk),
+                shape = RoundedCornerShape(6.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp),
+            ) {
+                Text("VID", fontFamily = Mono, fontSize = 12.sp, letterSpacing = 1.sp)
             }
             Spacer(Modifier.width(8.dp))
         }
@@ -1043,3 +1075,46 @@ private fun rememberBlobImage(hashHex: String): ImageBitmap? =
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
         }.getOrNull()
     }
+
+// A blob's bytes only turn into a playable clip once written back out to a file — VideoView
+// has no "play these bytes" API. Written to cache on first tap, not on bubble render, since
+// most received videos are never opened.
+@Composable
+private fun VideoBubble(hashHex: String) {
+    val context = LocalContext.current
+    var playing by remember(hashHex) { mutableStateOf(false) }
+
+    if (!playing) {
+        Box(
+            modifier = Modifier
+                .heightIn(min = 140.dp, max = 240.dp)
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(4.dp))
+                .background(Panel)
+                .clickable { playing = true },
+            contentAlignment = Alignment.Center,
+        ) {
+            Text("▶  PLAY VIDEO", color = MeshGreen, fontFamily = Mono, fontSize = 13.sp, letterSpacing = 1.sp)
+        }
+    } else {
+        val file = remember(hashHex) {
+            runCatching {
+                val bytes = MeshForegroundService.instance?.blobStore?.read(hashHex) ?: return@runCatching null
+                File.createTempFile("ping-play-", ".mp4", context.cacheDir).apply { writeBytes(bytes) }
+            }.getOrNull()
+        }
+        if (file != null) {
+            AndroidView(
+                modifier = Modifier.heightIn(max = 240.dp).fillMaxWidth().clip(RoundedCornerShape(4.dp)),
+                factory = { ctx ->
+                    VideoView(ctx).apply {
+                        setVideoURI(Uri.fromFile(file))
+                        setOnPreparedListener { it.isLooping = false; start() }
+                    }
+                },
+            )
+        } else {
+            Text("video unavailable", color = Slate, fontFamily = Mono, fontSize = 12.sp)
+        }
+    }
+}

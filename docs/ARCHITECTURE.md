@@ -109,6 +109,15 @@ integrity comes from the content hash, not a signature). `IncomingTransfer` reas
 chunks and **verifies the full SHA-256 before accepting anything** — a forged or
 corrupted transfer is discarded whole, not partially trusted.
 
+Video goes through the same 1 MiB control-lane cap, which is why `VideoTranscoder`
+(`android/app/.../media/VideoTranscoder.kt`) re-encodes every captured clip to HEVC at a
+starved bitrate (350 kbps) and a hard 8s duration cap before it ever reaches
+`offerMedia()` — full source resolution is kept (scaling would need a GL pass to
+resample the decoder's output) and bitrate absorbs the size instead. It's the standard
+decode-into-the-encoder's-input-`Surface` transcode pipeline, so there's no manual YUV
+buffer handling. Devices without a hardware HEVC encoder fail this step with a system
+chat notice rather than a crash.
+
 ## Identity and login (Android app)
 
 The mesh identity (`core/crypto/Identity`) is a device keypair: Ed25519 for signing,

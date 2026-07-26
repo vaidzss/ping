@@ -17,6 +17,8 @@ object MeshRepository {
         val isSos: Boolean = false,
         /** Content hash of an image in the blob store, for photo messages. */
         val imageHash: String? = null,
+        /** Content hash of a video in the blob store, for video messages. */
+        val videoHash: String? = null,
         /** Signature verified against the sender's announced key. */
         val verified: Boolean = false,
         /** Encrypted 1:1 message. */

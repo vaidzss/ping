@@ -17,6 +17,7 @@ import android.os.Build
 import android.os.IBinder
 import dev.meshaid.app.MeshRepository
 import dev.meshaid.app.ble.BleMeshTransport
+import dev.meshaid.app.media.VideoTranscoder
 import dev.meshaid.core.MeshMessage
 import dev.meshaid.core.MeshNode
 import dev.meshaid.core.blob.BlobStore
@@ -173,8 +174,8 @@ class MeshForegroundService : Service() {
         }
         node.onMediaOffer = { offer, _ -> offer.totalSize <= MeshNode.MAX_AUTO_FETCH_BYTES }
         node.onMediaReceived = { hashHex, mimeTag, from ->
-            if (mimeTag == MimeTag.JPEG || mimeTag == MimeTag.PNG) {
-                record(
+            when (mimeTag) {
+                MimeTag.JPEG, MimeTag.PNG -> record(
                     MeshRepository.ChatMessage(
                         fromId = from.toString(),
                         text = "",
@@ -183,6 +184,16 @@ class MeshForegroundService : Service() {
                         imageHash = hashHex,
                     ),
                 )
+                MimeTag.MP4 -> record(
+                    MeshRepository.ChatMessage(
+                        fromId = from.toString(),
+                        text = "",
+                        timestampMs = System.currentTimeMillis(),
+                        mine = false,
+                        videoHash = hashHex,
+                    ),
+                )
+                else -> Unit
             }
         }
 
@@ -323,6 +334,46 @@ class MeshForegroundService : Service() {
                     timestampMs = System.currentTimeMillis(),
                     mine = true,
                     imageHash = hash,
+                ),
+            )
+        }
+    }
+
+    fun sendVideo(uri: Uri) {
+        scope.launch {
+            val mp4 = runCatching { VideoTranscoder.transcode(this@MeshForegroundService, uri, cacheDir) }
+                .onFailure { e ->
+                    MeshRepository.addMessage(
+                        MeshRepository.ChatMessage(
+                            fromId = "system",
+                            text = "Couldn't prepare that video for the mesh: ${e.message}",
+                            timestampMs = System.currentTimeMillis(),
+                            mine = false,
+                            system = true,
+                        ),
+                    )
+                }
+                .getOrNull() ?: return@launch
+            if (mp4.size > MeshNode.MAX_AUTO_FETCH_BYTES) {
+                MeshRepository.addMessage(
+                    MeshRepository.ChatMessage(
+                        fromId = "system",
+                        text = "That clip is still too big for the mesh even after compression — try a shorter one.",
+                        timestampMs = System.currentTimeMillis(),
+                        mine = false,
+                        system = true,
+                    ),
+                )
+                return@launch
+            }
+            val hash = node.offerMedia(mp4, MimeTag.MP4)
+            record(
+                MeshRepository.ChatMessage(
+                    fromId = identity.nodeId.toString(),
+                    text = "",
+                    timestampMs = System.currentTimeMillis(),
+                    mine = true,
+                    videoHash = hash,
                 ),
             )
         }
