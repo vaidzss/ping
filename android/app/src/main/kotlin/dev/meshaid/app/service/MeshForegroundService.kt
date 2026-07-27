@@ -9,7 +9,6 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.location.LocationManager
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.BatteryManager
@@ -25,6 +24,7 @@ import dev.meshaid.core.crypto.Identity
 import dev.meshaid.core.crypto.StorageVault
 import dev.meshaid.core.dtn.BundleStore
 import dev.meshaid.core.media.MimeTag
+import dev.meshaid.core.mesh.BeaconThrottle
 import dev.meshaid.core.protocol.GpsBeacon
 import dev.meshaid.core.protocol.NodeId
 import dev.meshaid.core.protocol.Packet
@@ -37,7 +37,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import java.io.ByteArrayOutputStream
+import kotlin.coroutines.resume
 
 /**
  * Always-on mesh relay: typed connectedDevice foreground service that keeps the BLE
@@ -50,8 +52,13 @@ class MeshForegroundService : Service() {
         private const val NOTIFICATION_ID = 1
         private const val PRESENCE_INTERVAL_MS = 10_000L
         private const val BEACON_INTERVAL_MS = 30_000L
-        private const val MAX_IMAGE_DIMENSION = 1280
-        private const val TARGET_IMAGE_BYTES = 600 * 1024
+        private const val BEACON_FIX_TIMEOUT_MS = 8_000L
+        private const val SOS_FIX_TIMEOUT_MS = 12_000L
+        // Halved from the original 1280px/600KB: BLE's real-world throughput is a few KB/s at
+        // best, so a smaller target means a photo transfer actually finishes in a reasonable
+        // time instead of taking minutes across a couple hundred chunks.
+        private const val MAX_IMAGE_DIMENSION = 1024
+        private const val TARGET_IMAGE_BYTES = 300 * 1024
 
         @Volatile
         var instance: MeshForegroundService? = null
@@ -78,6 +85,8 @@ class MeshForegroundService : Service() {
     lateinit var blobStore: BlobStore
         private set
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val locationFixProvider by lazy { LocationFixProvider(this) }
+    private val beaconThrottle = BeaconThrottle()
 
     private fun record(message: MeshRepository.ChatMessage) {
         messageLog.append(message)
@@ -97,6 +106,17 @@ class MeshForegroundService : Service() {
         identity = unlocked
         instance = this
         bleLane = BleMeshTransport(this, identity.nodeId)
+        bleLane.onDiagnostic = { message ->
+            MeshRepository.addMessage(
+                MeshRepository.ChatMessage(
+                    fromId = "system",
+                    text = "BLE: $message",
+                    timestampMs = System.currentTimeMillis(),
+                    mine = false,
+                    system = true,
+                ),
+            )
+        }
         lanLane = LanMeshTransport(identity.nodeId)
         lanLane.onDiagnostic = { message ->
             MeshRepository.addMessage(
@@ -193,6 +213,10 @@ class MeshForegroundService : Service() {
         scope.launch {
             while (true) {
                 node.tick()
+                // Cheap no-op once actually running — but if Bluetooth was off at launch and
+                // the user turns it on mid-session, this is what brings BLE up without
+                // requiring an app restart or a dedicated ACTION_STATE_CHANGED receiver.
+                bleLane.start()
                 val links = bleLane.linkCount() + lanLane.peerCount()
                 MeshRepository.setPeerCount(links.coerceAtLeast(node.router.neighborCount()))
                 MeshRepository.setCarryingCount(bundleStore.size())
@@ -211,7 +235,7 @@ class MeshForegroundService : Service() {
         scope.launch {
             while (true) {
                 delay(BEACON_INTERVAL_MS)
-                bestEffortBeacon().takeIf { it.latE7 != 0 || it.lonE7 != 0 }?.let {
+                fetchBeacon(BEACON_FIX_TIMEOUT_MS).takeIf { it.latE7 != 0 || it.lonE7 != 0 }?.let {
                     MeshRepository.setSelfLocation(it.lat, it.lon)
                     node.send(PacketType.GPS_BEACON, it.encode())
                 }
@@ -297,7 +321,7 @@ class MeshForegroundService : Service() {
     }
 
     fun sendSos(note: String) = scope.launch {
-        val beacon = bestEffortBeacon()
+        val beacon = fetchBeacon(SOS_FIX_TIMEOUT_MS)
         val payload = beacon.encode() + note.toByteArray()
         val packet = node.send(PacketType.SOS, payload)
         record(
@@ -405,15 +429,20 @@ class MeshForegroundService : Service() {
         if (beacon.latE7 == 0 && beacon.lonE7 == 0) "no fix"
         else "%.5f, %.5f".format(beacon.lat, beacon.lon)
 
-    private fun bestEffortBeacon(): GpsBeacon {
+    /**
+     * Actively requests a fix rather than only reading whatever's cached — on a phone where
+     * no other app has recently asked for GPS, `getLastKnownLocation()` alone returns null
+     * forever, which is exactly why SOS shipped with no coordinates and the map never showed
+     * a beacon. Suspends the calling coroutine; safe to call `node.send()` right after, since
+     * resuming a coroutine always redispatches onto its own context (Dispatchers.Default
+     * here), never onto whichever thread happened to deliver the location callback.
+     */
+    private suspend fun fetchBeacon(timeoutMs: Long): GpsBeacon {
         val battery = (getSystemService(BATTERY_SERVICE) as BatteryManager)
             .getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
-        val location = runCatching {
-            val lm = getSystemService(LOCATION_SERVICE) as LocationManager
-            lm.getProviders(true).asSequence()
-                .mapNotNull { lm.getLastKnownLocation(it) }
-                .maxByOrNull { it.time }
-        }.getOrNull()
+        val location = suspendCancellableCoroutine { continuation ->
+            locationFixProvider.requestFix(timeoutMs) { location -> continuation.resume(location) }
+        }
         return if (location != null) {
             GpsBeacon.of(location.latitude, location.longitude, location.accuracy.toInt(), battery)
         } else {

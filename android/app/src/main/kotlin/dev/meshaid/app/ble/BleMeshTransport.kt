@@ -21,7 +21,6 @@ import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.os.Build
 import android.os.ParcelUuid
-import android.util.Log
 import dev.meshaid.core.protocol.NodeId
 import dev.meshaid.core.transport.MeshTransport
 import java.util.UUID
@@ -42,7 +41,6 @@ class BleMeshTransport(
 ) : MeshTransport {
 
     companion object {
-        private const val TAG = "BleMeshTransport"
         val SERVICE_UUID: UUID = UUID.fromString("4d455348-4149-4400-a1d0-000000000001")
         val FRAME_WRITE_UUID: UUID = UUID.fromString("4d455348-4149-4400-a1d0-000000000002")
         val FRAME_NOTIFY_UUID: UUID = UUID.fromString("4d455348-4149-4400-a1d0-000000000003")
@@ -55,10 +53,26 @@ class BleMeshTransport(
     override var onPeerConnected: ((NodeId) -> Unit)? = null
     override var onPeerDisconnected: ((NodeId) -> Unit)? = null
 
+    /**
+     * BLE going quiet used to be a pure logcat warning (`Log.w`) — invisible outside a
+     * debugger. `bluetoothLeAdvertiser`/`bluetoothLeScanner` both return null with zero other
+     * signal when the radio itself is off, which is exactly the case a real user hits.
+     */
+    var onDiagnostic: ((String) -> Unit)? = null
+
     private val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
     private var gattServer: BluetoothGattServer? = null
     private var notifyCharacteristic: BluetoothGattCharacteristic? = null
     private var started = false
+    private var reportedDisabled = false
+
+    // notifyCharacteristicChanged() queues internally and only allows one outstanding
+    // notification at a time — calling it again before onNotificationSent() fires for the
+    // previous one silently drops data rather than erroring. A multi-hundred-chunk photo
+    // transfer hit this on every attempt; a one-chunk chat message got lucky often enough
+    // to look like it worked. Paced the same way the client-write side already was.
+    private val notifyQueue = ArrayDeque<Pair<BluetoothDevice, ByteArray>>()
+    private var notifying = false
 
     private inner class ClientLink(val peerId: NodeId, val device: BluetoothDevice) {
         var gatt: BluetoothGatt? = null
@@ -82,9 +96,22 @@ class BleMeshTransport(
     @Synchronized
     fun linkCount(): Int = clientLinks.values.count { it.ready } + serverLinks.values.count { it.subscribed }
 
+    /**
+     * Safe to call repeatedly — a no-op once actually running, and a cheap retry otherwise.
+     * The caller polls this rather than calling it once, so the mesh comes up on its own the
+     * moment the user flips Bluetooth on, with no separate ACTION_STATE_CHANGED receiver needed.
+     */
     @Synchronized
     override fun start() {
         if (started) return
+        if (manager.adapter?.isEnabled != true) {
+            if (!reportedDisabled) {
+                onDiagnostic?.invoke("Bluetooth is off — the mesh can't reach anyone until it's turned on")
+                reportedDisabled = true
+            }
+            return
+        }
+        reportedDisabled = false
         started = true
         startServer()
         startAdvertising()
@@ -102,6 +129,8 @@ class BleMeshTransport(
         serverLinks.clear()
         runCatching { gattServer?.close() }
         gattServer = null
+        notifyQueue.clear()
+        notifying = false
     }
 
     @Synchronized
@@ -111,21 +140,18 @@ class BleMeshTransport(
             BleFraming.fragment(frame, link.maxWrite).forEach { link.queue.add(it) }
             pumpQueue(link)
         }
-        val server = gattServer ?: return
-        val characteristic = notifyCharacteristic ?: return
         for (link in serverLinks.values) {
             if (!link.subscribed) continue
-            for (chunk in BleFraming.fragment(frame, link.maxWrite)) {
-                notifyChunk(server, characteristic, link.device, chunk)
-            }
+            BleFraming.fragment(frame, link.maxWrite).forEach { notifyQueue.add(link.device to it) }
         }
+        pumpNotifyQueue()
     }
 
     // ---------------------------------------------------------------- GATT server (peripheral)
 
     private fun startServer() {
         val server = manager.openGattServer(context, serverCallback) ?: run {
-            Log.w(TAG, "openGattServer returned null")
+            onDiagnostic?.invoke("openGattServer returned null — can't accept incoming BLE links")
             return
         }
         val service = BluetoothGattService(SERVICE_UUID, BluetoothGattService.SERVICE_TYPE_PRIMARY)
@@ -208,15 +234,23 @@ class BleMeshTransport(
                 gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, null)
             }
         }
+
+        override fun onNotificationSent(device: BluetoothDevice, status: Int) {
+            synchronized(this@BleMeshTransport) {
+                notifying = false
+                pumpNotifyQueue()
+            }
+        }
     }
 
+    /** Must hold the transport lock. */
     @Suppress("DEPRECATION")
-    private fun notifyChunk(
-        server: BluetoothGattServer,
-        characteristic: BluetoothGattCharacteristic,
-        device: BluetoothDevice,
-        chunk: ByteArray,
-    ) {
+    private fun pumpNotifyQueue() {
+        if (notifying) return
+        val server = gattServer ?: return
+        val characteristic = notifyCharacteristic ?: return
+        val (device, chunk) = notifyQueue.removeFirstOrNull() ?: return
+        notifying = true
         runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 server.notifyCharacteristicChanged(device, characteristic, false, chunk)
@@ -224,6 +258,11 @@ class BleMeshTransport(
                 characteristic.value = chunk
                 server.notifyCharacteristicChanged(device, characteristic, false)
             }
+        }.onFailure {
+            // Threw synchronously — onNotificationSent will never fire for this one, so
+            // nothing else would ever un-stick the queue without this.
+            notifying = false
+            pumpNotifyQueue()
         }
     }
 
@@ -231,13 +270,13 @@ class BleMeshTransport(
 
     private val advertiseCallback = object : AdvertiseCallback() {
         override fun onStartFailure(errorCode: Int) {
-            Log.w(TAG, "advertise failed: $errorCode")
+            onDiagnostic?.invoke("BLE advertise failed to start (error $errorCode) — other phones won't see us")
         }
     }
 
     private fun startAdvertising() {
         val advertiser = manager.adapter?.bluetoothLeAdvertiser ?: run {
-            Log.w(TAG, "BLE advertiser unavailable")
+            onDiagnostic?.invoke("BLE advertiser unavailable — other phones won't see us")
             return
         }
         val settings = AdvertiseSettings.Builder()
@@ -270,13 +309,13 @@ class BleMeshTransport(
         }
 
         override fun onScanFailed(errorCode: Int) {
-            Log.w(TAG, "scan failed: $errorCode")
+            onDiagnostic?.invoke("BLE scan failed to start (error $errorCode) — we won't see other phones")
         }
     }
 
     private fun startScanning() {
         val scanner = manager.adapter?.bluetoothLeScanner ?: run {
-            Log.w(TAG, "BLE scanner unavailable")
+            onDiagnostic?.invoke("BLE scanner unavailable — we won't see other phones")
             return
         }
         val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid(SERVICE_UUID)).build()

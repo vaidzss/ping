@@ -1,10 +1,17 @@
 package dev.meshaid.app
 
 import android.Manifest
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothManager
+import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.PickVisualMediaRequest
@@ -103,8 +110,67 @@ class MainActivity : ComponentActivity() {
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
-            if (grants.values.all { it }) unlockedIdentity?.let { MeshForegroundService.start(this, it) }
+            val denied = grants.filterValues { !it }.keys
+            if (denied.isEmpty()) {
+                unlockedIdentity?.let { startMeshService(it) }
+            } else {
+                // Starting the service anyway would crash it — BleMeshTransport's BLE calls
+                // throw SecurityException without these — so this used to just go quiet with
+                // no mesh and no explanation at all.
+                MeshRepository.addMessage(
+                    MeshRepository.ChatMessage(
+                        fromId = "system",
+                        text = "Mesh can't start — denied: ${denied.joinToString { it.substringAfterLast('.') }}. " +
+                            "Grant them from the phone's app settings, then reopen Ping.",
+                        timestampMs = System.currentTimeMillis(),
+                        mine = false,
+                        system = true,
+                    ),
+                )
+            }
         }
+
+    // The result is ignored deliberately: whether the user allows or dismisses this, we still
+    // start the service either way — BleMeshTransport now retries on its own tick loop, so
+    // declining here just means BLE comes up later if they enable Bluetooth manually instead.
+    private val enableBluetoothLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+            unlockedIdentity?.let { checkBluetoothAndStart(it) }
+        }
+
+    // Same reasoning — declining just means the OEM battery manager may still kill BLE in the
+    // background later; the mesh still starts either way rather than being blocked on this.
+    private val batteryExemptionLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+            unlockedIdentity?.let { checkBluetoothAndStart(it) }
+        }
+
+    private fun startMeshService(identity: Identity) {
+        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+        if (!powerManager.isIgnoringBatteryOptimizations(packageName)) {
+            // ColorOS/OxygenOS/MIUI and friends are known to kill BLE scanning/advertising in a
+            // background foreground service anyway unless explicitly exempted — this is exactly
+            // the "phones never see each other" failure mode, not a bug in the BLE code itself.
+            runCatching {
+                batteryExemptionLauncher.launch(
+                    Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")),
+                )
+            }.onFailure { checkBluetoothAndStart(identity) }
+        } else {
+            checkBluetoothAndStart(identity)
+        }
+    }
+
+    private fun checkBluetoothAndStart(identity: Identity) {
+        val adapter = (getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+        val canRequestEnable = Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+        if (adapter != null && !adapter.isEnabled && canRequestEnable) {
+            enableBluetoothLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+        } else {
+            MeshForegroundService.start(this, identity)
+        }
+    }
 
     private val photoPicker =
         registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
@@ -172,7 +238,7 @@ class MainActivity : ComponentActivity() {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }
         if (missing.isEmpty()) {
-            MeshForegroundService.start(this, identity)
+            startMeshService(identity)
         } else {
             permissionLauncher.launch(missing.toTypedArray())
         }
