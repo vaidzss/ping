@@ -11,8 +11,10 @@ for exactly what that does and doesn't protect.
 Ping is free software, licensed under the [AGPL-3.0](LICENSE), and open to
 contributions — see [CONTRIBUTING.md](CONTRIBUTING.md) to get started.
 
-**Status: pre-release (Phase 1 of 6), unaudited.** See [docs/VISION.md](docs/VISION.md)
-for the roadmap (including the planned India civic reporting & legal-aid tier),
+**Status: pre-release, unaudited.** Phases 1–2 (Android MVP + media pipeline — mesh chat,
+mesh map, photo/video sharing, SOS) are done and confirmed working on real phones over
+real BLE; Phase 5 hardening is in progress. See [docs/VISION.md](docs/VISION.md) for the
+full roadmap (including the planned India civic reporting & legal-aid tier),
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the system fits together, and
 [protocol/SPEC.md](protocol/SPEC.md) for the exact wire format.
 
