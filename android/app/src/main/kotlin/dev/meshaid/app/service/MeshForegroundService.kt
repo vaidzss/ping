@@ -149,10 +149,22 @@ class MeshForegroundService : Service() {
         MeshRepository.setFriends(FriendStore.load(this))
         val bundles = BundleStore(System::currentTimeMillis)
         bundleStore = bundles
+        val transport = CompositeMeshTransport(listOf(bleLane, lanLane))
+        transport.onDiagnostic = { message ->
+            MeshRepository.addMessage(
+                MeshRepository.ChatMessage(
+                    fromId = "system",
+                    text = "TRANSPORT: $message",
+                    timestampMs = System.currentTimeMillis(),
+                    mine = false,
+                    system = true,
+                ),
+            )
+        }
         node = MeshNode(
             selfId = identity.nodeId,
             clock = System::currentTimeMillis,
-            transport = CompositeMeshTransport(listOf(bleLane, lanLane)),
+            transport = transport,
             bundleStore = bundles,
             blobStore = blobStore,
             identity = identity,
@@ -237,7 +249,11 @@ class MeshForegroundService : Service() {
                 delay(BEACON_INTERVAL_MS)
                 fetchBeacon(BEACON_FIX_TIMEOUT_MS).takeIf { it.latE7 != 0 || it.lonE7 != 0 }?.let {
                     MeshRepository.setSelfLocation(it.lat, it.lon)
-                    node.send(PacketType.GPS_BEACON, it.encode())
+                    // A stationary phone re-broadcasting an unchanged fix on a fixed timer
+                    // costs every relay hop across the mesh, not just this device.
+                    if (beaconThrottle.shouldSend(System.currentTimeMillis(), it.lat, it.lon)) {
+                        node.send(PacketType.GPS_BEACON, it.encode())
+                    }
                 }
             }
         }
@@ -338,7 +354,19 @@ class MeshForegroundService : Service() {
     /** Downscale + recompress a picked image and offer it to the mesh. */
     fun sendImage(uri: Uri) {
         scope.launch {
-            val jpeg = runCatching { compressForMesh(uri) }.getOrNull() ?: return@launch
+            val jpeg = runCatching { compressForMesh(uri) }
+                .onFailure { e ->
+                    MeshRepository.addMessage(
+                        MeshRepository.ChatMessage(
+                            fromId = "system",
+                            text = "Couldn't prepare that image for the mesh: ${e.message}",
+                            timestampMs = System.currentTimeMillis(),
+                            mine = false,
+                            system = true,
+                        ),
+                    )
+                }
+                .getOrNull() ?: return@launch
             val hash = node.offerMedia(jpeg, MimeTag.JPEG)
             record(
                 MeshRepository.ChatMessage(

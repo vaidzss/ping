@@ -186,11 +186,23 @@ the receive/relay/transport path with a callback that explains what happened:
   signature mismatch, wrong recipient, sealed box wouldn't open).
 - `LanMeshTransport.onDiagnostic` — transport-level failures: failed dial, failed
   handshake, a write that killed a link, a duplicate-connection race.
+- `CompositeMeshTransport.onDiagnostic` — one lane throwing on start/stop/broadcast used
+  to take every other lane down with it (`lanes.forEach { it.start() }` never reaches
+  lane 2 if lane 1 throws); each lane is now isolated, and this says which one failed.
 
-All three are wired into both the node CLI (prints to the console) and the Android app
+All four are wired into both the node CLI (prints to the console) and the Android app
 (amber "system" chat entries, see `LogEntry` in `MainActivity.kt`). If you're debugging
 a mesh issue and nothing is showing up, that itself is now a bug — every drop point has
 a callback; if one is silent, it's a gap to close, not a signal to work around.
+
+### Beacon traffic is throttled, not timer-driven
+
+`GPS_BEACON` used to go out on a fixed 30s timer regardless of whether the phone had
+moved — for a stationary phone (the common case in a shelter or a fixed post), that's
+identical traffic re-forwarded by every relay hop across the mesh, forever, paid for in
+battery by devices that aren't even the sender. `BeaconThrottle` (core, radio-agnostic)
+gates each fix behind either real movement (15m) or a slow heartbeat (3 min) so a beacon
+only goes out when it's actually new information or a peer's copy is going stale.
 
 ## Where a new transport or platform would plug in
 
