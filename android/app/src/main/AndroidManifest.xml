@@ -33,6 +33,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Many OEM skins (ColorOS/OxygenOS/MIUI) kill BLE scanning/advertising in a background
+         foreground service anyway unless the app is explicitly battery-optimization-exempt. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!-- QR contact verification: scanning a peer's card in person, offline. -->
@@ -59,5 +62,12 @@
             android:name=".service.MeshForegroundService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+
+        <!-- zxing-android-embedded's CaptureActivity ships hardcoded to landscape; QR contact
+             exchange is a phone-in-hand, in-person action, so lock it to portrait instead. -->
+        <activity
+            android:name="com.journeyapps.barcodescanner.CaptureActivity"
+            android:screenOrientation="portrait"
+            tools:replace="android:screenOrientation" />
     </application>
 </manifest>
