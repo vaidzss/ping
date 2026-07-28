@@ -229,6 +229,9 @@ class MeshForegroundService : Service() {
                 // the user turns it on mid-session, this is what brings BLE up without
                 // requiring an app restart or a dedicated ACTION_STATE_CHANGED receiver.
                 bleLane.start()
+                // Android's connection-state callback doesn't always fire for a link that's
+                // actually gone dead — this catches and rebuilds those "zombie" connections.
+                bleLane.pruneStaleLinks()
                 val links = bleLane.linkCount() + lanLane.peerCount()
                 MeshRepository.setPeerCount(links.coerceAtLeast(node.router.neighborCount()))
                 MeshRepository.setCarryingCount(bundleStore.size())

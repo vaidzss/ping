@@ -47,6 +47,11 @@ class BleMeshTransport(
         val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
         private const val REQUESTED_MTU = 517
         private const val DEFAULT_WRITE = 20 // MTU 23 - 3, until negotiated
+
+        // Presence broadcasts every 10s (MeshForegroundService.PRESENCE_INTERVAL_MS) flow
+        // through every connected link, so a healthy connection should never go this quiet.
+        // 2.5x that interval, with slack for scheduling jitter.
+        private const val STALE_LINK_TIMEOUT_MS = 25_000L
     }
 
     override var onFrame: ((ByteArray) -> Unit)? = null
@@ -80,6 +85,7 @@ class BleMeshTransport(
         var maxWrite = DEFAULT_WRITE
         var ready = false
         var writing = false
+        var lastActivityMs = System.currentTimeMillis()
         val queue = ArrayDeque<ByteArray>()
         val reassembler = BleFraming.Reassembler()
     }
@@ -87,6 +93,7 @@ class BleMeshTransport(
     private inner class ServerLink(val device: BluetoothDevice) {
         var subscribed = false
         var maxWrite = DEFAULT_WRITE
+        var lastActivityMs = System.currentTimeMillis()
         val reassembler = BleFraming.Reassembler()
     }
 
@@ -95,6 +102,37 @@ class BleMeshTransport(
 
     @Synchronized
     fun linkCount(): Int = clientLinks.values.count { it.ready } + serverLinks.values.count { it.subscribed }
+
+    /**
+     * Android's `onConnectionStateChange` doesn't reliably fire for every real-world failure
+     * mode — a link can go "zombie": Android still reports it connected while the radio-level
+     * link is actually dead (a known issue on combo Wi-Fi/BT chipsets, where toggling Wi-Fi can
+     * glitch the BT radio via shared coexistence hardware). Presence flows through every link
+     * every ~10s, so silence past [STALE_LINK_TIMEOUT_MS] means the link is lying — force it
+     * closed so the scan/advertise loop can rebuild it fresh, rather than sitting on a link
+     * that looks connected but will never deliver anything again.
+     */
+    @Synchronized
+    fun pruneStaleLinks() {
+        if (!started) return
+        val now = System.currentTimeMillis()
+
+        val staleClients = clientLinks.filterValues { it.ready && now - it.lastActivityMs > STALE_LINK_TIMEOUT_MS }
+        staleClients.forEach { (address, link) ->
+            onDiagnostic?.invoke("BLE link to ${link.peerId} went quiet — reconnecting")
+            clientLinks.remove(address)
+            runCatching { link.gatt?.disconnect() }
+            runCatching { link.gatt?.close() }
+            onPeerDisconnected?.invoke(link.peerId)
+        }
+
+        val staleServers = serverLinks.filterValues { it.subscribed && now - it.lastActivityMs > STALE_LINK_TIMEOUT_MS }
+        staleServers.forEach { (address, link) ->
+            onDiagnostic?.invoke("BLE link from a subscriber went quiet — dropping it")
+            serverLinks.remove(address)
+            runCatching { gattServer?.cancelConnection(link.device) }
+        }
+    }
 
     /**
      * Safe to call repeatedly — a no-op once actually running, and a cheap retry otherwise.
@@ -206,7 +244,9 @@ class BleMeshTransport(
         ) {
             if (characteristic.uuid == FRAME_WRITE_UUID) {
                 val frame = synchronized(this@BleMeshTransport) {
-                    serverLinks.getOrPut(device.address) { ServerLink(device) }.reassembler.accept(value)
+                    val link = serverLinks.getOrPut(device.address) { ServerLink(device) }
+                    link.lastActivityMs = System.currentTimeMillis()
+                    link.reassembler.accept(value)
                 }
                 frame?.let { onFrame?.invoke(it) }
             }
@@ -237,6 +277,9 @@ class BleMeshTransport(
 
         override fun onNotificationSent(device: BluetoothDevice, status: Int) {
             synchronized(this@BleMeshTransport) {
+                if (status == BluetoothGatt.GATT_SUCCESS) {
+                    serverLinks[device.address]?.lastActivityMs = System.currentTimeMillis()
+                }
                 notifying = false
                 pumpNotifyQueue()
             }
@@ -377,6 +420,7 @@ class BleMeshTransport(
         ) {
             synchronized(this@BleMeshTransport) {
                 clientLinks[gatt.device.address]?.let {
+                    if (status == BluetoothGatt.GATT_SUCCESS) it.lastActivityMs = System.currentTimeMillis()
                     it.writing = false
                     pumpQueue(it)
                 }
@@ -402,7 +446,9 @@ class BleMeshTransport(
 
     private fun handleNotification(gatt: BluetoothGatt, value: ByteArray) {
         val frame = synchronized(this@BleMeshTransport) {
-            clientLinks[gatt.device.address]?.reassembler?.accept(value)
+            val link = clientLinks[gatt.device.address] ?: return@synchronized null
+            link.lastActivityMs = System.currentTimeMillis()
+            link.reassembler.accept(value)
         }
         frame?.let { onFrame?.invoke(it) }
     }
