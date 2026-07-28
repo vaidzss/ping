@@ -47,6 +47,7 @@ private data class MapContact(
     val name: String,
     val distanceKm: Double,
     val bearingDeg: Double,
+    val accuracyM: Int?,
     val isFriend: Boolean,
     val fresh: Boolean,
     val verified: Boolean,
@@ -71,6 +72,7 @@ internal fun MapScreen(onBack: () -> Unit) {
                     name = p.name ?: friends[p.id] ?: p.id.take(6),
                     distanceKm = haversineKm(selfLat, selfLon, lat, lon),
                     bearingDeg = bearingDeg(selfLat, selfLon, lat, lon),
+                    accuracyM = p.accuracyM,
                     isFriend = p.id in friends,
                     fresh = ageSec < 40,
                     verified = p.verified,
@@ -224,14 +226,15 @@ private fun MapContactRow(contact: MapContact) {
             }
             Spacer(Modifier.height(2.dp))
             Text(
-                compassLabel(contact.bearingDeg) + " · " + (if (contact.isFriend) "friend" else "not added"),
+                compassLabel(contact.bearingDeg) + " · " + (if (contact.isFriend) "friend" else "not added") +
+                    (contact.accuracyM?.let { " · ±${it}m GPS" } ?: ""),
                 color = Slate,
                 fontFamily = Mono,
                 fontSize = 11.sp,
             )
         }
         Text(
-            formatDistance(contact.distanceKm),
+            distanceLabel(contact.distanceKm, contact.accuracyM),
             color = if (contact.fresh) MeshGreen else Slate,
             fontFamily = Mono,
             fontSize = 13.sp,
@@ -239,6 +242,16 @@ private fun MapContactRow(contact: MapContact) {
         )
     }
     HairLine()
+}
+
+/**
+ * A precise-looking "35m away" is misleading once it's smaller than the fix's own reported
+ * uncertainty — two phones standing together can easily see 30-50m of indoor GPS error each,
+ * so the honest read at that point is "about here," not a distance worth trusting.
+ */
+private fun distanceLabel(distanceKm: Double, accuracyM: Int?): String {
+    if (accuracyM != null && distanceKm * 1000 <= accuracyM) return "~same spot"
+    return formatDistance(distanceKm)
 }
 
 private fun compassLabel(bearingDeg: Double): String {

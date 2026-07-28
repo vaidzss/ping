@@ -32,6 +32,9 @@ object MeshRepository {
         val name: String? = null,
         val lat: Double? = null,
         val lon: Double? = null,
+        /** GPS fix uncertainty in meters, from the same GpsBeacon this lat/lon came from —
+         *  a reported distance below this is noise, not an actual gap. */
+        val accuracyM: Int? = null,
         val lastSeenMs: Long = 0,
         val verified: Boolean = false,
     )

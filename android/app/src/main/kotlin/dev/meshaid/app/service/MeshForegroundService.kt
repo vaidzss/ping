@@ -376,7 +376,7 @@ class MeshForegroundService : Service() {
                 } else ""
                 beacon?.takeIf { it.latE7 != 0 || it.lonE7 != 0 }?.let { fix ->
                     MeshRepository.updatePeer(packet.senderId.toString()) {
-                        it.copy(lat = fix.lat, lon = fix.lon, lastSeenMs = System.currentTimeMillis())
+                        it.copy(lat = fix.lat, lon = fix.lon, accuracyM = fix.accuracyM, lastSeenMs = System.currentTimeMillis())
                     }
                 }
                 record(
@@ -393,7 +393,7 @@ class MeshForegroundService : Service() {
             PacketType.GPS_BEACON -> {
                 runCatching { GpsBeacon.decode(payload) }.getOrNull()?.let { fix ->
                     MeshRepository.updatePeer(packet.senderId.toString()) {
-                        it.copy(lat = fix.lat, lon = fix.lon, lastSeenMs = System.currentTimeMillis())
+                        it.copy(lat = fix.lat, lon = fix.lon, accuracyM = fix.accuracyM, lastSeenMs = System.currentTimeMillis())
                     }
                 }
             }
