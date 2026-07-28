@@ -472,7 +472,9 @@ class MeshForegroundService : Service() {
         val battery = (getSystemService(BATTERY_SERVICE) as BatteryManager)
             .getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
         val location = suspendCancellableCoroutine { continuation ->
-            locationFixProvider.requestFix(timeoutMs) { location -> continuation.resume(location) }
+            locationFixProvider.requestFix(timeoutMs) { location ->
+                continuation.tryResume(location)?.let { token -> continuation.completeResume(token) }
+            }
         }
         return if (location != null) {
             GpsBeacon.of(location.latitude, location.longitude, location.accuracy.toInt(), battery)
