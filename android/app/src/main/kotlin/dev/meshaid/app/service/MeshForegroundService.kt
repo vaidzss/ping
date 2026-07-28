@@ -341,6 +341,18 @@ class MeshForegroundService : Service() {
 
     fun sendVideo(uri: Uri) {
         scope.launch {
+            // HEVC transcode can take a real stretch of wall-clock time even when it's going
+            // to succeed — with no feedback at all until it finishes, "still working" and
+            // "silently stuck" look identical to whoever's waiting on it.
+            MeshRepository.addMessage(
+                MeshRepository.ChatMessage(
+                    fromId = "system",
+                    text = "Preparing video for the mesh — this can take a moment…",
+                    timestampMs = System.currentTimeMillis(),
+                    mine = false,
+                    system = true,
+                ),
+            )
             val mp4 = runCatching { VideoTranscoder.transcode(this@MeshForegroundService, uri, cacheDir) }
                 .onFailure { e ->
                     MeshRepository.addMessage(

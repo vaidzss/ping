@@ -27,6 +27,13 @@ object VideoTranscoder {
     private const val I_FRAME_INTERVAL = 2
     private const val TIMEOUT_US = 10_000L
 
+    // The per-call dequeue timeout above bounds one poll, not the whole job — nothing
+    // previously stopped `while (!outputDone)` from spinning forever if the encoder never
+    // signals end-of-stream (a real, device-specific MediaCodec risk, not hypothetical).
+    // That's indistinguishable from the app doing nothing: no crash, no error, no video —
+    // just silence. Generous relative to the 8s cap, but bounded.
+    private const val MAX_TRANSCODE_WALL_MS = 45_000L
+
     /** Throws if the source has no video track or the platform lacks an HEVC encoder. */
     fun transcode(context: Context, uri: Uri, cacheDir: File): ByteArray {
         val extractor = MediaExtractor()
@@ -65,9 +72,13 @@ object VideoTranscoder {
         val bufferInfo = MediaCodec.BufferInfo()
         var inputDone = false
         var outputDone = false
+        val deadlineMs = System.currentTimeMillis() + MAX_TRANSCODE_WALL_MS
 
         try {
             while (!outputDone) {
+                check(System.currentTimeMillis() < deadlineMs) {
+                    "transcode timed out after ${MAX_TRANSCODE_WALL_MS}ms — encoder never finished"
+                }
                 if (!inputDone) {
                     val inIndex = decoder.dequeueInputBuffer(TIMEOUT_US)
                     if (inIndex >= 0) {
