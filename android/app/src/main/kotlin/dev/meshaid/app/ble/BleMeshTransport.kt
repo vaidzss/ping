@@ -52,6 +52,12 @@ class BleMeshTransport(
         // through every connected link, so a healthy connection should never go this quiet.
         // 2.5x that interval, with slack for scheduling jitter.
         private const val STALE_LINK_TIMEOUT_MS = 25_000L
+
+        // A single write/notification normally completes in well under a second. This is
+        // deliberately much shorter than STALE_LINK_TIMEOUT_MS — it's not "is the link dead",
+        // it's "did this one in-flight send's completion callback go missing", which a
+        // multi-hundred-chunk transfer is exactly the kind of thing to trigger.
+        private const val SEND_STUCK_TIMEOUT_MS = 6_000L
     }
 
     override var onFrame: ((ByteArray) -> Unit)? = null
@@ -76,8 +82,17 @@ class BleMeshTransport(
     // previous one silently drops data rather than erroring. A multi-hundred-chunk photo
     // transfer hit this on every attempt; a one-chunk chat message got lucky often enough
     // to look like it worked. Paced the same way the client-write side already was.
+    //
+    // `notifying` is shared across every connected peer, not per-link — if onNotificationSent
+    // never fires for one in-flight notification (the peer disconnects mid-send, a stale link
+    // gets pruned while a notification to it is outstanding, or Android's stack just drops the
+    // callback — all real, all seen), this flag gets stuck true forever and silently freezes
+    // ALL future BLE sends to EVERY peer, not just the one that stalled. A multi-hundred-chunk
+    // photo/video transfer is exactly what's likely to hit this. notifyingSince lets a
+    // watchdog force it back open.
     private val notifyQueue = ArrayDeque<Pair<BluetoothDevice, ByteArray>>()
     private var notifying = false
+    private var notifyingSince = 0L
 
     private inner class ClientLink(val peerId: NodeId, val device: BluetoothDevice) {
         var gatt: BluetoothGatt? = null
@@ -85,6 +100,7 @@ class BleMeshTransport(
         var maxWrite = DEFAULT_WRITE
         var ready = false
         var writing = false
+        var writingSince = 0L
         var lastActivityMs = System.currentTimeMillis()
         val queue = ArrayDeque<ByteArray>()
         val reassembler = BleFraming.Reassembler()
@@ -131,6 +147,22 @@ class BleMeshTransport(
             onDiagnostic?.invoke("BLE link from a subscriber went quiet — dropping it")
             serverLinks.remove(address)
             runCatching { gattServer?.cancelConnection(link.device) }
+        }
+
+        // notifying/writing are only ever meant to be true for as long as one send is
+        // in flight. If a completion callback goes missing, these get stuck true forever and
+        // silently freeze every future send through that path — this is the recovery for that.
+        if (notifying && now - notifyingSince > SEND_STUCK_TIMEOUT_MS) {
+            onDiagnostic?.invoke("BLE notification queue stuck — resuming it")
+            notifying = false
+            pumpNotifyQueue()
+        }
+        clientLinks.values.forEach { link ->
+            if (link.writing && now - link.writingSince > SEND_STUCK_TIMEOUT_MS) {
+                onDiagnostic?.invoke("BLE write to ${link.peerId} stuck — resuming it")
+                link.writing = false
+                pumpQueue(link)
+            }
         }
     }
 
@@ -294,6 +326,7 @@ class BleMeshTransport(
         val characteristic = notifyCharacteristic ?: return
         val (device, chunk) = notifyQueue.removeFirstOrNull() ?: return
         notifying = true
+        notifyingSince = System.currentTimeMillis()
         runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 server.notifyCharacteristicChanged(device, characteristic, false, chunk)
@@ -461,6 +494,7 @@ class BleMeshTransport(
         val gatt = link.gatt ?: return
         val characteristic = link.writeCharacteristic ?: return
         link.writing = true
+        link.writingSince = System.currentTimeMillis()
         runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 gatt.writeCharacteristic(characteristic, chunk, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)

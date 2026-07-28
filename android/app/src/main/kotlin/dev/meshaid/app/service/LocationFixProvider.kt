@@ -5,60 +5,78 @@ import android.content.Context
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
-import android.os.Build
-import android.os.CancellationSignal
 import android.os.Handler
 import android.os.Looper
-import java.util.concurrent.Executors
 
 /**
- * Actively requests a fresh fix instead of only reading whatever's cached —
- * `getLastKnownLocation()` alone returns null forever on a phone where no other app has
- * recently asked for GPS, which is exactly what made SOS ship with no coordinates and the
- * mesh map never show a beacon. Resolves with the first fix any enabled provider produces,
- * or the stale cache as a last resort if nothing answers within [timeoutMs].
+ * Keeps one long-lived location session running for the app's whole lifetime, rather than
+ * issuing a fresh bounded request per caller.
+ *
+ * The first version of this class did the latter (a one-shot `getCurrentLocation`/
+ * `requestSingleUpdate` per call, cancelled at its own timeout) and it was worse than the
+ * passive `getLastKnownLocation()`-only approach it replaced: with no Wi-Fi or mobile data —
+ * exactly the disaster scenario this app is for — `NETWORK_PROVIDER` can't resolve at all, so
+ * the only source left is a raw GPS cold fix, which can easily take 30s+ indoors. A per-call
+ * timeout of even 10-12s cancels that acquisition before it ever completes, and the *next*
+ * call starts the same cold acquisition over from scratch — it can never finish. A session
+ * that's never cancelled lets a slow fix land whenever it lands, and every caller afterward —
+ * this beacon cycle, the next one, an SOS three minutes from now — benefits from it.
  */
-@SuppressLint("MissingPermission") // only ever constructed once ACCESS_FINE_LOCATION is granted
 class LocationFixProvider(context: Context) {
     private val manager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-    private val executor = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    @Suppress("DEPRECATION") // requestSingleUpdate is the only option below API 30
-    fun requestFix(timeoutMs: Long, onResult: (Location?) -> Unit) {
+    @Volatile private var bestFix: Location? = null
+    private val activeListeners = mutableListOf<LocationListener>()
+    private var started = false
+
+    /** Idempotent — call once at service startup so acquisition has as long as possible to land. */
+    @SuppressLint("MissingPermission") // only ever constructed once ACCESS_FINE_LOCATION is granted
+    fun startContinuousUpdates() {
+        if (started) return
         val providers = runCatching { manager.getProviders(true) }.getOrDefault(emptyList())
-        if (providers.isEmpty()) {
-            onResult(cachedFallback())
-            return
-        }
-
-        var settled = false
-        val signal = CancellationSignal()
-        val legacyListeners = mutableListOf<LocationListener>()
-
-        fun settle(location: Location?) {
-            if (settled) return
-            settled = true
-            signal.cancel()
-            legacyListeners.forEach { runCatching { manager.removeUpdates(it) } }
-            onResult(location ?: cachedFallback())
-        }
-
+        if (providers.isEmpty()) return
+        started = true
         providers.forEach { provider ->
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                runCatching {
-                    manager.getCurrentLocation(provider, signal, executor) { location ->
-                        mainHandler.post { settle(location) }
-                    }
-                }
-            } else {
-                val listener = LocationListener { location -> settle(location) }
-                legacyListeners.add(listener)
-                runCatching { manager.requestSingleUpdate(provider, listener, Looper.getMainLooper()) }
+            val listener = LocationListener { location -> bestFix = location }
+            activeListeners.add(listener)
+            runCatching {
+                manager.requestLocationUpdates(provider, /* minTimeMs = */ 0L, /* minDistanceM = */ 0f, listener, Looper.getMainLooper())
             }
         }
+    }
 
-        mainHandler.postDelayed({ settle(null) }, timeoutMs)
+    fun stopContinuousUpdates() {
+        activeListeners.forEach { runCatching { manager.removeUpdates(it) } }
+        activeListeners.clear()
+        started = false
+    }
+
+    /** Whatever the continuous session has produced so far, or the OS's own cache — no wait. */
+    fun currentFix(): Location? = bestFix ?: cachedFallback()
+
+    /**
+     * Polls the continuous session for up to [timeoutMs] before falling back to whatever's
+     * available. Never cancels the underlying session — a timeout here just means this
+     * particular caller stopped waiting, not that acquisition stopped.
+     */
+    fun requestFix(timeoutMs: Long, onResult: (Location?) -> Unit) {
+        startContinuousUpdates()
+        currentFix()?.let {
+            onResult(it)
+            return
+        }
+        val deadlineMs = System.currentTimeMillis() + timeoutMs
+        pollUntil(deadlineMs, onResult)
+    }
+
+    private fun pollUntil(deadlineMs: Long, onResult: (Location?) -> Unit) {
+        val fix = bestFix
+        if (fix != null || System.currentTimeMillis() >= deadlineMs) {
+            onResult(fix ?: cachedFallback())
+        } else {
+            mainHandler.postDelayed({ pollUntil(deadlineMs, onResult) }, POLL_INTERVAL_MS)
+        }
     }
 
     private fun cachedFallback(): Location? =
@@ -67,4 +85,8 @@ class LocationFixProvider(context: Context) {
                 .mapNotNull { manager.getLastKnownLocation(it) }
                 .maxByOrNull { it.time }
         }.getOrNull()
+
+    companion object {
+        private const val POLL_INTERVAL_MS = 1_000L
+    }
 }

@@ -204,6 +204,48 @@ battery by devices that aren't even the sender. `BeaconThrottle` (core, radio-ag
 gates each fix behind either real movement (15m) or a slow heartbeat (3 min) so a beacon
 only goes out when it's actually new information or a peer's copy is going stale.
 
+### A "DUPLICATE" delivery drop is often harmless, not a failure
+
+`onDeliveryDropped` fires for a duplicate exactly as loudly as for a forged signature —
+intentionally, per the no-silent-drops policy above. But a duplicate reaching that
+callback doesn't necessarily mean anything failed: `PacketCodec.messageId()` is a hash of
+the packet's own bytes (sender, timestamp, type, payload), so it only fires for a literal
+byte-for-byte repeat of a packet the dedup cache already recorded — which happens
+routinely and harmlessly (the same frame arriving over two transport lanes at once, or a
+full BLE-fragment retransmission after a reconnect) precisely *because* the first copy
+already got through and was already processed. Seeing "DROPPED ... DUPLICATE" is evidence
+the mesh is working, not evidence something is stuck.
+
+### BLE send queues can get stuck, not just links
+
+Both BLE send paths — `notifyCharacteristicChanged()` (server/peripheral) and
+`writeCharacteristic()` (client) — only allow one send in flight at a time, gated by a
+completion callback (`onNotificationSent` / `onCharacteristicWrite`). If that callback
+ever goes missing (the peer disconnects mid-send, a stale link gets pruned while a send
+to it is outstanding, or the OS stack just drops it), the gating flag gets stuck `true`
+forever and silently freezes every future send on that path — for the server side, to
+*every* connected peer, since `notifying` isn't per-link. A multi-hundred-chunk photo or
+video transfer is exactly what's likely to trigger this, which is why a one-chunk chat
+message could keep working right up until the first large transfer wedged everything.
+`pruneStaleLinks()` (called from the same 2s tick as the zombie-link check) now also
+watches how long a send has been "in flight" and force-resumes the queue if it's been
+stuck past `SEND_STUCK_TIMEOUT_MS` (6s — deliberately much shorter than the 25s zombie-link
+window, since this is "one callback went missing," not "the whole link is dead").
+
+### Location is a long-lived session, not a per-call request
+
+The first cut of `LocationFixProvider` issued a fresh bounded `getCurrentLocation()` /
+`requestSingleUpdate()` per caller, cancelled at that caller's own timeout. That's fine
+when `NETWORK_PROVIDER` can resolve quickly, but with no Wi-Fi or mobile data — the
+disaster scenario this app is built for — network-based location can't resolve at all,
+leaving only a raw GPS cold fix, which can take 30s+ indoors. A per-call timeout of even
+12s cancels that acquisition before it ever completes, and the next call starts the same
+cold acquisition over from nothing — it can never finish. `LocationFixProvider` now starts
+one `requestLocationUpdates()` session at service startup and never cancels it; every
+caller (the periodic beacon, an SOS) just reads whatever that session has produced so far,
+so a slow fix that finally lands still benefits every future call, not just the one that
+happened to be waiting when it arrived.
+
 ## Where a new transport or platform would plug in
 
 Everything above `MeshTransport` (routing, DTN, crypto, blob store) is radio-agnostic.
