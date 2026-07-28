@@ -38,7 +38,7 @@ class LocationFixProvider(context: Context) {
         if (providers.isEmpty()) return
         started = true
         providers.forEach { provider ->
-            val listener = LocationListener { location -> bestFix = location }
+            val listener = LocationListener { location -> bestFix = preferFix(bestFix, location) }
             activeListeners.add(listener)
             runCatching {
                 manager.requestLocationUpdates(provider, /* minTimeMs = */ 0L, /* minDistanceM = */ 0f, listener, Looper.getMainLooper())
@@ -86,7 +86,23 @@ class LocationFixProvider(context: Context) {
                 .maxByOrNull { it.time }
         }.getOrNull()
 
+    /**
+     * Naively keeping "whatever arrived last" means one noisy reading (a real, common GPS
+     * artifact — an indoor multipath bounce, a fix taken before enough satellites locked)
+     * overwrites a perfectly good one, so the next beacon or SOS uses the worse of the two for
+     * no reason. Prefer a materially more accurate fix even if it's older; otherwise take the
+     * newer one — and always take the newer one once the current fix is stale enough that
+     * "accurate but two minutes old" stops being an improvement over "fresh."
+     */
+    private fun preferFix(current: Location?, incoming: Location): Location {
+        if (current == null) return incoming
+        val currentAgeMs = incoming.time - current.time
+        if (currentAgeMs > STALE_FIX_MS) return incoming
+        return if (incoming.accuracy <= current.accuracy) incoming else current
+    }
+
     companion object {
         private const val POLL_INTERVAL_MS = 1_000L
+        private const val STALE_FIX_MS = 2 * 60 * 1000L
     }
 }
