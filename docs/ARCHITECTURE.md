@@ -232,6 +232,24 @@ watches how long a send has been "in flight" and force-resumes the queue if it's
 stuck past `SEND_STUCK_TIMEOUT_MS` (6s — deliberately much shorter than the 25s zombie-link
 window, since this is "one callback went missing," not "the whole link is dead").
 
+### BLE writes/notifications are acknowledged, not fire-and-forget
+
+Both send paths originally used the unacknowledged BLE primitives — `WRITE_TYPE_NO_RESPONSE`
+for client writes, plain `NOTIFY` for server pushes. Neither gives any delivery guarantee
+from the radio itself: a chunk can be silently dropped over the air with zero indication
+to either side. That's an acceptable trade for the odd chat packet (worst case, the
+resumable-transfer retry eventually notices and re-asks), but for a ~150-chunk photo or
+video the odds of losing at least one chunk with no signal at all are real, and every fix
+above this layer — the notify-queue pacing, the stuck-send watchdog — can't tell "sent
+successfully" from "sent and vanished" if the underlying primitive can't tell them apart
+either. Both sides now use the acknowledged variants instead: `WRITE_TYPE_DEFAULT` (Write
+Request, ATT-level response) for client writes, `PROPERTY_INDICATE` (not `NOTIFY`) for
+server pushes, confirmed via `BluetoothGattDescriptor.ENABLE_INDICATION_VALUE` on
+subscribe. `onCharacteristicWrite`/`onNotificationSent`'s `status` now reflects a real
+peer-side acknowledgment, not just "the local stack queued it" — slower (every send is a
+round trip instead of fire-and-forget) but actually reliable, which for a resumable
+transfer protocol that assumes silence means "ask again" matters more than raw throughput.
+
 ### Location is a long-lived session, not a per-call request
 
 The first cut of `LocationFixProvider` issued a fresh bounded `getCurrentLocation()` /

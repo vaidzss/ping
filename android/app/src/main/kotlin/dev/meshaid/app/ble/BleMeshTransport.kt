@@ -225,14 +225,20 @@ class BleMeshTransport(
             return
         }
         val service = BluetoothGattService(SERVICE_UUID, BluetoothGattService.SERVICE_TYPE_PRIMARY)
+        // Both sides used to be unacknowledged (WRITE_NO_RESPONSE / NOTIFY) — fire-and-forget,
+        // no delivery guarantee at all from the radio itself. Fine for the odd chat packet;
+        // for a ~150-chunk photo transfer the odds of losing at least one chunk with zero
+        // indication are real, and no amount of app-level pacing can tell "sent" from "sent
+        // and silently vanished." WRITE (with response) / INDICATE give every send an actual
+        // ATT-level acknowledgment, so a completion callback now means the peer really got it.
         val write = BluetoothGattCharacteristic(
             FRAME_WRITE_UUID,
-            BluetoothGattCharacteristic.PROPERTY_WRITE or BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE,
+            BluetoothGattCharacteristic.PROPERTY_WRITE,
             BluetoothGattCharacteristic.PERMISSION_WRITE,
         )
         val notify = BluetoothGattCharacteristic(
             FRAME_NOTIFY_UUID,
-            BluetoothGattCharacteristic.PROPERTY_NOTIFY,
+            BluetoothGattCharacteristic.PROPERTY_INDICATE,
             0,
         )
         notify.addDescriptor(
@@ -299,7 +305,7 @@ class BleMeshTransport(
             if (descriptor.uuid == CCCD_UUID) {
                 synchronized(this@BleMeshTransport) {
                     serverLinks.getOrPut(device.address) { ServerLink(device) }.subscribed =
-                        value.contentEquals(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                        value.contentEquals(BluetoothGattDescriptor.ENABLE_INDICATION_VALUE)
                 }
             }
             if (responseNeeded) {
@@ -435,7 +441,7 @@ class BleMeshTransport(
             val notify = service.getCharacteristic(FRAME_NOTIFY_UUID) ?: return
             gatt.setCharacteristicNotification(notify, true)
             val cccd = notify.getDescriptor(CCCD_UUID) ?: return
-            writeDescriptorCompat(gatt, cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+            writeDescriptorCompat(gatt, cccd, BluetoothGattDescriptor.ENABLE_INDICATION_VALUE)
         }
 
         override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
@@ -497,9 +503,9 @@ class BleMeshTransport(
         link.writingSince = System.currentTimeMillis()
         runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                gatt.writeCharacteristic(characteristic, chunk, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
+                gatt.writeCharacteristic(characteristic, chunk, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
             } else {
-                characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
                 characteristic.value = chunk
                 gatt.writeCharacteristic(characteristic)
             }
