@@ -473,7 +473,10 @@ class MeshForegroundService : Service() {
             .getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
         val location = suspendCancellableCoroutine { continuation ->
             locationFixProvider.requestFix(timeoutMs) { location ->
-                continuation.tryResume(location)?.let { token -> continuation.completeResume(token) }
+                // requestFix()'s callback can outlive the coroutine waiting on it (e.g. the
+                // service is torn down mid-request) — resuming an already-cancelled
+                // continuation throws, so this must be checked, not assumed.
+                if (continuation.isActive) continuation.resume(location)
             }
         }
         return if (location != null) {
