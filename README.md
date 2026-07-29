@@ -2,6 +2,10 @@
 
 **Chat, share location, and send photos/videos with no internet — built for emergencies.**
 
+<!-- TODO: drop a 10-15s GIF/WebM here of two phones exchanging messages in Airplane
+     Mode — this is the single highest-value thing missing from this README. Record it
+     off the next two-phone test round; docs/TESTING.md has the setup. -->
+
 Phone-to-phone mesh over Bluetooth LE (chat/GPS/SOS, multi-hop, store-carry-forward) with
 on-demand Wi-Fi links for media, and optional LoRa nodes for kilometer-scale text range.
 Every account is local-only — pick a callsign and password on-device (no server, no
@@ -26,12 +30,60 @@ for the roadmap (including the planned India civic reporting & legal-aid tier),
   can be tested with a single phone. See [docs/TESTING.md](docs/TESTING.md).
 - `android/app/` — Android app: BLE + LAN transports, foreground mesh service, Compose UI.
 
-## Build
+## Architecture: one mesh, multiple radio lanes
 
-Requires JDK 17+ and the Android SDK (`local.properties` → `sdk.dir`).
+Everything above `MeshTransport` — routing, store-carry-forward, crypto, the blob store —
+is radio-agnostic and lives in `core/`. Each radio is a thin, swappable lane underneath it;
+today that's BLE (always-on, low bandwidth) and LAN (on-demand, for bulk media), with a
+LoRa lane planned for Phase 4. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the
+full data-flow walkthrough.
+
+```mermaid
+flowchart TD
+    UI["Android app · Compose UI<br/>chat / broadcast / SOS / map"]
+
+    subgraph CORE["core — platform-independent, unit-tested"]
+        Node["MeshNode"]
+        Router["MeshRouter<br/>TTL flood + dedup + rate limit"]
+        Codec["PacketCodec<br/>fixed-header binary format"]
+        DTN["BundleStore<br/>store-carry-forward"]
+        Blob["BlobStore<br/>content-addressed media"]
+        Dir["PeerDirectory<br/>keys + identity"]
+    end
+
+    subgraph XPORT["CompositeMeshTransport"]
+        BLE["BleMeshTransport<br/>GATT · always-on · low bandwidth"]
+        LAN["LanMeshTransport<br/>Wi-Fi/hotspot · on-demand · bulk media"]
+        LoRa["LoRa lane<br/>(planned, Phase 4)"]
+    end
+
+    Peer["Next phone in range<br/>(same stack, radio hop)"]
+
+    UI --> Node --> Router --> Codec --> XPORT
+    Router -.-> DTN
+    Router -.-> Blob
+    Router -.-> Dir
+    BLE --> Peer
+    LAN --> Peer
+    LoRa -.-> Peer
+
+    style LoRa stroke-dasharray: 5 5
+```
+
+## Try it
+
+No device needed for the actual mesh logic — routing, DTN, crypto, and dense-crowd/churn
+scenarios all run as plain JUnit tests in well under a minute:
 
 ```
-gradlew.bat :core:test :tools:simulator:test    # core logic + mesh simulation tests
+gradlew.bat :core:test :tools:simulator:test    # core logic + mesh simulation, no device
+```
+
+Seeing the mesh move packets over a real radio needs either two Android devices, or one
+phone plus the desktop dev node (`tools/node/`, joins over LAN — see
+[docs/TESTING.md](docs/TESTING.md) for the one-phone setup):
+
+```
 gradlew.bat :android:app:assembleDebug          # Android APK
 ```
 
