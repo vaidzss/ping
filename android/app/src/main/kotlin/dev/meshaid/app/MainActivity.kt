@@ -34,6 +34,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -46,8 +47,14 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Image as ImageIcon
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -306,8 +313,11 @@ fun MeshScreen(onPickPhoto: () -> Unit, onScanContact: () -> Unit) {
     val running by MeshRepository.meshRunning.collectAsState()
     var screen by remember { mutableStateOf<Screen>(Screen.ChatsList) }
 
+    // imePadding matters here: targetSdk 36 makes edge-to-edge mandatory, and without it the
+    // keyboard covers the composer and SOS bar instead of pushing them up above it.
     Column(
-        modifier = Modifier.fillMaxSize().background(Night).statusBarsPadding().navigationBarsPadding(),
+        modifier = Modifier.fillMaxSize().background(Night)
+            .statusBarsPadding().navigationBarsPadding().imePadding(),
     ) {
         Box(Modifier.weight(1f)) {
             when (val s = screen) {
@@ -345,6 +355,9 @@ fun MeshScreen(onPickPhoto: () -> Unit, onScanContact: () -> Unit) {
                 )
             }
         }
+        // A hairline seam keeps the emergency action visually distinct from whatever's above it
+        // (composer, chats list) — previously there was zero separation between them.
+        HairLine()
         // Emergency broadcast is always one tap away, regardless of which conversation is open.
         SosBar(enabled = running)
     }
@@ -361,7 +374,7 @@ private fun InstrumentPanel() {
     val carrying by MeshRepository.carryingCount.collectAsState()
 
     Column(
-        modifier = Modifier.fillMaxWidth().background(Panel).padding(horizontal = 14.dp, vertical = 10.dp),
+        modifier = Modifier.fillMaxWidth().background(Panel).padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -531,7 +544,7 @@ private fun ChatsList(
 private fun BroadcastRow(lastMessage: MeshRepository.ChatMessage?, onClick: () -> Unit) {
     val running by MeshRepository.meshRunning.collectAsState()
     Row(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 11.dp),
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         StatusLamp(running)
@@ -572,7 +585,7 @@ private fun BroadcastRow(lastMessage: MeshRepository.ChatMessage?, onClick: () -
 @Composable
 private fun MyQrRow(onClick: () -> Unit) {
     Row(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 11.dp),
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(Modifier.size(8.dp).background(DmCyan, CircleShape))
@@ -729,7 +742,16 @@ private fun LogEntry(msg: MeshRepository.ChatMessage) {
     val sender = if (msg.system) "PING" else if (msg.mine) "YOU" else MeshRepository.displayName(msg.fromId).uppercase()
     val marks = if (msg.verified && !msg.mine) "  ✓" else ""
 
-    Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 5.dp)) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+            .background(Panel, RoundedCornerShape(14.dp))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+    ) {
+        // Left accent strip stays the marker for message type (green=peer, orange=SOS,
+        // amber=system, slate=you) — a "channel log" reads by that color rail, not by bubble
+        // side, so every entry stays left-aligned regardless of who sent it.
         Box(
             Modifier
                 .width(3.dp)
@@ -840,30 +862,49 @@ private fun ThreadScreen(peerId: String, onBack: () -> Unit, enabled: Boolean) {
 @Composable
 internal fun ThreadHeaderRow(title: String, online: Boolean, onBack: () -> Unit) {
     Row(
-        modifier = Modifier.fillMaxWidth().background(Panel).padding(horizontal = 10.dp, vertical = 12.dp),
+        modifier = Modifier.fillMaxWidth().background(Panel).padding(end = 16.dp, top = 6.dp, bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        IconButton(onClick = onBack) {
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to chats", tint = Chalk)
+        }
+        HeaderAvatar(title)
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                title,
+                color = Chalk,
+                fontWeight = FontWeight.Bold,
+                fontSize = 16.sp,
+                maxLines = 1,
+            )
+            Text(
+                if (online) "online — mesh live" else "not in range",
+                color = if (online) MeshGreen else Slate,
+                fontFamily = Mono,
+                fontSize = 11.sp,
+                letterSpacing = 0.5.sp,
+            )
+        }
+    }
+    HairLine()
+}
+
+/** A colored initial in a circle — the closest thing to a photo a mesh identity has. */
+@Composable
+private fun HeaderAvatar(title: String) {
+    Box(
+        modifier = Modifier.size(38.dp).background(Inkwell, CircleShape),
+        contentAlignment = Alignment.Center,
+    ) {
         Text(
-            "‹ CHATS",
-            color = MeshGreen,
-            fontFamily = Mono,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Bold,
-            letterSpacing = 1.sp,
-            modifier = Modifier.clickable(onClick = onBack).padding(end = 16.dp),
-        )
-        StatusLamp(online)
-        Spacer(Modifier.width(8.dp))
-        Text(
-            title,
+            title.trim().take(1).uppercase(),
             color = Chalk,
             fontFamily = Mono,
             fontWeight = FontWeight.Bold,
             fontSize = 15.sp,
-            letterSpacing = 1.sp,
         )
     }
-    HairLine()
 }
 
 @Composable
@@ -894,19 +935,27 @@ private fun ThreadBubble(msg: MeshRepository.ChatMessage) {
     val time = remember(msg.timestampMs) {
         SimpleDateFormat("HH:mm", Locale.US).format(Date(msg.timestampMs))
     }
+    // Asymmetric corners with a tight "tail" corner pointing at whoever sent it — the same
+    // shape language Signal/Telegram use to make a bubble read as coming from a direction,
+    // not just a rounded rectangle floating in space.
+    val shape = if (msg.mine) {
+        RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 4.dp)
+    } else {
+        RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 4.dp, bottomEnd = 18.dp)
+    }
     Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
         horizontalArrangement = if (msg.mine) Arrangement.End else Arrangement.Start,
     ) {
         Column(
             modifier = Modifier
-                .widthIn(max = 280.dp)
-                .background(if (msg.mine) DmCyan.copy(alpha = 0.15f) else Panel, RoundedCornerShape(10.dp))
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                .widthIn(max = 300.dp)
+                .background(if (msg.mine) DmCyan.copy(alpha = 0.20f) else Panel, shape)
+                .padding(horizontal = 16.dp, vertical = 9.dp),
         ) {
             Text(msg.text, color = Chalk, fontSize = 15.sp, lineHeight = 20.sp)
-            Spacer(Modifier.height(2.dp))
-            Row {
+            Spacer(Modifier.height(3.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(time, color = Slate, fontFamily = Mono, fontSize = 10.sp)
                 if (msg.verified && !msg.mine) {
                     Spacer(Modifier.width(6.dp))
@@ -930,20 +979,17 @@ private fun Composer(
 ) {
     HairLine()
     Row(
-        modifier = Modifier.fillMaxWidth().background(Panel).padding(horizontal = 10.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth().background(Panel).padding(horizontal = 8.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.Bottom,
     ) {
         if (showPhotoButton) {
-            Button(
-                onClick = onPickPhoto,
-                enabled = enabled,
-                colors = ButtonDefaults.buttonColors(containerColor = Inkwell, contentColor = Chalk),
-                shape = RoundedCornerShape(6.dp),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp),
-            ) {
-                Text("IMG", fontFamily = Mono, fontSize = 12.sp, letterSpacing = 1.sp)
+            IconButton(onClick = onPickPhoto, enabled = enabled, modifier = Modifier.size(44.dp)) {
+                Icon(
+                    ImageIcon,
+                    contentDescription = "Attach a photo",
+                    tint = if (enabled) Slate else Slate.copy(alpha = 0.4f),
+                )
             }
-            Spacer(Modifier.width(8.dp))
         }
         OutlinedTextField(
             value = draft,
@@ -951,40 +997,41 @@ private fun Composer(
             modifier = Modifier.weight(1f),
             placeholder = {
                 Text(
-                    if (showPhotoButton) "message everyone on the mesh" else "message",
+                    if (showPhotoButton) "Message everyone…" else "Message…",
                     color = Slate,
-                    fontSize = 13.sp,
+                    fontSize = 14.sp,
                 )
             },
+            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 15.sp),
             colors = OutlinedTextFieldDefaults.colors(
                 focusedTextColor = Chalk,
                 unfocusedTextColor = Chalk,
-                focusedContainerColor = Night,
-                unfocusedContainerColor = Night,
-                focusedBorderColor = MeshGreen.copy(alpha = 0.6f),
-                unfocusedBorderColor = Inkwell,
+                focusedContainerColor = Inkwell,
+                unfocusedContainerColor = Inkwell,
+                focusedBorderColor = Color.Transparent,
+                unfocusedBorderColor = Color.Transparent,
                 cursorColor = MeshGreen,
             ),
-            shape = RoundedCornerShape(6.dp),
-            maxLines = 3,
+            shape = RoundedCornerShape(22.dp),
+            maxLines = 4,
             // Without this, the keyboard's Enter key inserts a newline instead of
             // sending — easy to hit by habit and silent (no packet, no on-screen sign).
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
             keyboardActions = KeyboardActions(onSend = { onSend() }),
         )
-        Spacer(Modifier.width(8.dp))
-        Button(
+        Spacer(Modifier.width(6.dp))
+        val canSend = enabled && draft.isNotBlank()
+        IconButton(
             onClick = onSend,
-            enabled = enabled,
-            colors = ButtonDefaults.buttonColors(
-                containerColor = MeshGreen,
-                contentColor = Night,
-                disabledContainerColor = Inkwell,
-                disabledContentColor = Slate,
-            ),
-            shape = RoundedCornerShape(6.dp),
+            enabled = canSend,
+            modifier = Modifier.size(44.dp).clip(CircleShape).background(if (canSend) MeshGreen else Inkwell),
         ) {
-            Text("SEND", fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = 13.sp, letterSpacing = 1.sp)
+            Icon(
+                Icons.AutoMirrored.Filled.Send,
+                contentDescription = "Send",
+                tint = if (canSend) Night else Slate,
+                modifier = Modifier.size(20.dp),
+            )
         }
     }
 }
@@ -1027,7 +1074,7 @@ private fun SectionLabel(text: String) {
         fontFamily = Mono,
         fontSize = 10.sp,
         letterSpacing = 2.sp,
-        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
     )
 }
 
@@ -1044,7 +1091,7 @@ private fun FriendRow(
     val ageSec = live?.let { ((now - it.lastSeenMs) / 1000).coerceAtLeast(0) }
     val fresh = ageSec != null && ageSec < 40 // within the presence-expiry window
     Row(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 9.dp),
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(Modifier.size(8.dp).background(if (fresh) MeshGreen else Slate, CircleShape))
@@ -1097,7 +1144,7 @@ private fun FriendRow(
 @Composable
 private fun NearbyRow(name: String, onAdd: () -> Unit) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 9.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(Modifier.size(8.dp).background(MeshGreen, CircleShape))
@@ -1118,7 +1165,7 @@ private fun NearbyRow(name: String, onAdd: () -> Unit) {
             onClick = onAdd,
             colors = ButtonDefaults.buttonColors(containerColor = MeshGreen, contentColor = Night),
             shape = RoundedCornerShape(6.dp),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 6.dp),
         ) {
             Text("ADD", fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = 12.sp, letterSpacing = 1.sp)
         }
