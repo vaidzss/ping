@@ -297,6 +297,7 @@ private sealed class Screen {
     data object ChatsList : Screen()
     data object Broadcast : Screen()
     data object MyQr : Screen()
+    data object MeshMap : Screen()
     data class Thread(val peerId: String) : Screen()
 }
 
@@ -316,6 +317,7 @@ fun MeshScreen(onPickPhoto: () -> Unit, onScanContact: () -> Unit) {
                         onOpenBroadcast = { screen = Screen.Broadcast },
                         onOpenThread = { id -> screen = Screen.Thread(id) },
                         onOpenMyQr = { screen = Screen.MyQr },
+                        onOpenMap = { screen = Screen.MeshMap },
                     )
                 }
                 Screen.MyQr -> {
@@ -330,6 +332,7 @@ fun MeshScreen(onPickPhoto: () -> Unit, onScanContact: () -> Unit) {
                         )
                     }
                 }
+                Screen.MeshMap -> MapScreen(onBack = { screen = Screen.ChatsList })
                 Screen.Broadcast -> BroadcastScreen(
                     onBack = { screen = Screen.ChatsList },
                     onPickPhoto = onPickPhoto,
@@ -442,7 +445,7 @@ private fun StatusLamp(running: Boolean) {
 }
 
 @Composable
-private fun HairLine() {
+internal fun HairLine() {
     Box(Modifier.fillMaxWidth().height(1.dp).background(Inkwell))
 }
 
@@ -457,12 +460,14 @@ private fun ChatsList(
     onOpenBroadcast: () -> Unit,
     onOpenThread: (String) -> Unit,
     onOpenMyQr: () -> Unit,
+    onOpenMap: () -> Unit,
 ) {
     val messages by MeshRepository.messages.collectAsState()
     val peers by MeshRepository.peers.collectAsState()
     val friends by MeshRepository.friends.collectAsState()
     val self by MeshRepository.selfLocation.collectAsState()
     val now = System.currentTimeMillis()
+    val fixCount = remember(peers) { peers.values.count { it.lat != null && it.lon != null } }
 
     val lastBroadcast = remember(messages) { messages.lastOrNull { !it.direct && !it.system } }
     val friendRows = friends.entries
@@ -478,6 +483,7 @@ private fun ChatsList(
     LazyColumn(modifier = modifier.fillMaxWidth(), contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 6.dp)) {
         item { BroadcastRow(lastMessage = lastBroadcast, onClick = onOpenBroadcast) }
         item { MyQrRow(onClick = onOpenMyQr) }
+        item { MapRow(fixCount = fixCount, onClick = onOpenMap) }
         if (friendRows.isNotEmpty()) {
             item { SectionLabel("FRIENDS") }
             items(friendRows) { (row, lastMsg) ->
@@ -582,6 +588,38 @@ private fun MyQrRow(onClick: () -> Unit) {
             )
             Spacer(Modifier.height(2.dp))
             Text("show your QR · scan someone else's", color = Slate, fontFamily = Mono, fontSize = 11.sp)
+        }
+        Spacer(Modifier.width(8.dp))
+        Text("›", color = Slate, fontFamily = Mono, fontSize = 16.sp)
+    }
+    HairLine()
+}
+
+@Composable
+private fun MapRow(fixCount: Int, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(8.dp).background(if (fixCount > 0) MeshGreen else Slate, CircleShape))
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                "MESH MAP",
+                color = if (fixCount > 0) MeshGreen else Chalk,
+                fontFamily = Mono,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.sp,
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                if (fixCount == 0) "no GPS fixes yet"
+                else if (fixCount == 1) "1 device with a fix" else "$fixCount devices with a fix",
+                color = Slate,
+                fontFamily = Mono,
+                fontSize = 11.sp,
+            )
         }
         Spacer(Modifier.width(8.dp))
         Text("›", color = Slate, fontFamily = Mono, fontSize = 16.sp)
@@ -1088,10 +1126,10 @@ private fun NearbyRow(name: String, onAdd: () -> Unit) {
     HairLine()
 }
 
-private fun formatDistance(km: Double): String =
+internal fun formatDistance(km: Double): String =
     if (km < 1.0) "${(km * 1000).toInt()} m" else "%.1f km".format(km)
 
-private fun haversineKm(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+internal fun haversineKm(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
     val r = 6371.0
     val dLat = Math.toRadians(lat2 - lat1)
     val dLon = Math.toRadians(lon2 - lon1)
