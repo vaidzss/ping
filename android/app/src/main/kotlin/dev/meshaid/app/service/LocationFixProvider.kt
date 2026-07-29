@@ -28,10 +28,11 @@ class LocationFixProvider(context: Context) {
 
     @Volatile private var bestFix: Location? = null
     private val activeListeners = mutableListOf<LocationListener>()
-    private var started = false
+    @Volatile private var started = false
 
     /** Idempotent — call once at service startup so acquisition has as long as possible to land. */
     @SuppressLint("MissingPermission") // only ever constructed once ACCESS_FINE_LOCATION is granted
+    @Synchronized
     fun startContinuousUpdates() {
         if (started) return
         val providers = runCatching { manager.getProviders(true) }.getOrDefault(emptyList())
@@ -46,6 +47,7 @@ class LocationFixProvider(context: Context) {
         }
     }
 
+    @Synchronized
     fun stopContinuousUpdates() {
         activeListeners.forEach { runCatching { manager.removeUpdates(it) } }
         activeListeners.clear()
