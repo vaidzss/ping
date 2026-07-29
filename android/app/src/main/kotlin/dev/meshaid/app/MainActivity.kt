@@ -881,7 +881,7 @@ private fun Composer(
         if (showPhotoButton) {
             IconButton(onClick = onPickPhoto, enabled = enabled, modifier = Modifier.size(44.dp)) {
                 Icon(
-                    Icons.Filled.ImageIcon,
+                    ImageIcon,
                     contentDescription = "Attach a photo",
                     tint = if (enabled) Slate else Slate.copy(alpha = 0.4f),
                 )
