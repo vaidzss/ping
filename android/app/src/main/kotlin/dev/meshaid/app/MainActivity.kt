@@ -25,6 +25,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -51,6 +52,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Image as ImageIcon
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -60,6 +62,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -501,7 +504,11 @@ private fun ChatsList(
             item { SectionLabel("FRIENDS") }
             items(friendRows) { (row, lastMsg) ->
                 val (id, name, live) = row
-                FriendRow(id, name, live, lastMsg, self, now, onClick = { onOpenThread(id) })
+                FriendRow(
+                    id, name, live, lastMsg, self, now,
+                    onClick = { onOpenThread(id) },
+                    onRemove = { MeshForegroundService.instance?.removeFriend(id) },
+                )
             }
         }
         if (nearby.isNotEmpty()) {
@@ -1087,11 +1094,39 @@ private fun FriendRow(
     self: Pair<Double, Double>?,
     now: Long,
     onClick: () -> Unit,
+    onRemove: () -> Unit,
 ) {
     val ageSec = live?.let { ((now - it.lastSeenMs) / 1000).coerceAtLeast(0) }
     val fresh = ageSec != null && ageSec < 40 // within the presence-expiry window
+    var confirmingRemove by remember { mutableStateOf(false) }
+    if (confirmingRemove) {
+        AlertDialog(
+            onDismissRequest = { confirmingRemove = false },
+            title = { Text("Remove ${name.uppercase()}?", fontFamily = Mono, fontWeight = FontWeight.Bold) },
+            text = {
+                Text(
+                    "Their chat history stays on this phone — this only removes them from " +
+                        "your Roster. You can add them again later.",
+                    color = Slate,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { confirmingRemove = false; onRemove() }) {
+                    Text("REMOVE", color = RescueOrange, fontFamily = Mono, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmingRemove = false }) {
+                    Text("CANCEL", color = Slate, fontFamily = Mono)
+                }
+            },
+            containerColor = Panel,
+        )
+    }
     Row(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 9.dp),
+        modifier = Modifier.fillMaxWidth()
+            .combinedClickable(onClick = onClick, onLongClick = { confirmingRemove = true })
+            .padding(horizontal = 16.dp, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(Modifier.size(8.dp).background(if (fresh) MeshGreen else Slate, CircleShape))
