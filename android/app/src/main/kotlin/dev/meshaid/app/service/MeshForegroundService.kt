@@ -53,7 +53,10 @@ class MeshForegroundService : Service() {
         private const val PRESENCE_INTERVAL_MS = 10_000L
         private const val BEACON_INTERVAL_MS = 30_000L
         private const val BEACON_FIX_TIMEOUT_MS = 8_000L
-        private const val SOS_FIX_TIMEOUT_MS = 12_000L
+        // Longer than the beacon wait since this is user-triggered and worth more patience —
+        // neither timeout cancels the underlying GPS session anymore (see LocationFixProvider),
+        // so this only affects how long the SOS composer waits before sending with no fix.
+        private const val SOS_FIX_TIMEOUT_MS = 20_000L
         // Halved from the original 1280px/600KB: BLE's real-world throughput is a few KB/s at
         // best, so a smaller target means a photo transfer actually finishes in a reasonable
         // time instead of taking minutes across a couple hundred chunks.
@@ -105,6 +108,10 @@ class MeshForegroundService : Service() {
         pendingIdentity = null
         identity = unlocked
         instance = this
+        // Started as early as possible — a cold GPS fix indoors with no Wi-Fi/mobile data
+        // (network-based location can't resolve at all) can take 30s+, so the earlier this
+        // session starts, the more likely a fix has already landed by the first beacon or SOS.
+        locationFixProvider.startContinuousUpdates()
         bleLane = BleMeshTransport(this, identity.nodeId)
         bleLane.onDiagnostic = { message ->
             MeshRepository.addMessage(
@@ -268,6 +275,7 @@ class MeshForegroundService : Service() {
         MeshRepository.setMeshRunning(false)
         scope.cancel()
         node.stop()
+        locationFixProvider.stopContinuousUpdates()
         runCatching { multicastLock?.release() }
         instance = null
         super.onDestroy()
