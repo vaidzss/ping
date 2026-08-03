@@ -3,6 +3,7 @@ package dev.meshaid.app
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 
 /**
  * UI-facing state, written by the mesh service, observed by Compose.
@@ -86,20 +87,29 @@ object MeshRepository {
         _selfLocation.value = lat to lon
     }
 
+    // addMessage/seedHistory/updatePeer are read-modify-write over the current value, and
+    // callers are never on a single thread: BLE's GATT server callback, BLE's GATT client
+    // callback (a different connection, a different peer, a genuinely separate thread), the
+    // LAN lane's own reader thread, and the service's Dispatchers.Default coroutine scope can
+    // all land here concurrently. `.value = .value + x` races: two threads can both read the
+    // same snapshot, each compute their own "+x", and whichever writes last wins — silently
+    // dropping the other's update. `.update {}` closes that with an atomic compare-and-set
+    // retry loop, so a losing thread retries against the winner's new value instead of
+    // clobbering it.
     fun addMessage(message: ChatMessage) {
-        _messages.value = _messages.value + message
+        _messages.update { it + message }
     }
 
     /** Seed history from the persisted log (only when nothing is loaded yet). */
     fun seedHistory(history: List<ChatMessage>) {
-        if (_messages.value.isEmpty() && history.isNotEmpty()) {
-            _messages.value = history
-        }
+        _messages.update { if (it.isEmpty() && history.isNotEmpty()) history else it }
     }
 
     fun updatePeer(id: String, update: (PeerInfo) -> PeerInfo) {
-        val current = _peers.value[id] ?: PeerInfo(id)
-        _peers.value = _peers.value + (id to update(current))
+        _peers.update { current ->
+            val existing = current[id] ?: PeerInfo(id)
+            current + (id to update(existing))
+        }
     }
 
     fun displayName(id: String): String = _peers.value[id]?.name ?: id.take(8)
