@@ -474,9 +474,10 @@ class MeshForegroundService : Service() {
         val location = suspendCancellableCoroutine { continuation ->
             locationFixProvider.requestFix(timeoutMs) { location ->
                 // requestFix()'s callback can outlive the coroutine waiting on it (e.g. the
-                // service is torn down mid-request). Use tryResume/completeResume so a late
-                // callback after cancellation is ignored instead of throwing.
-                continuation.tryResume(location)?.let { token -> continuation.completeResume(token) }
+                // service is torn down mid-request) — resuming an already-cancelled
+                // continuation throws, so this must be checked, not assumed.
+                if (continuation.isActive) continuation.resume(location)
+            }
         }
         return if (location != null) {
             GpsBeacon.of(location.latitude, location.longitude, location.accuracy.toInt(), battery)
