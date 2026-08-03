@@ -321,6 +321,13 @@ class MeshForegroundService : Service() {
         MeshRepository.setFriends(FriendStore.load(this))
     }
 
+    /** Un-adds a friend. Their history stays (nothing here touches MessageLog) — only the
+     * Roster/thread grouping goes away; re-adding later picks the thread back up. */
+    fun removeFriend(id: String) {
+        FriendStore.remove(this, id)
+        MeshRepository.setFriends(FriendStore.load(this))
+    }
+
     /** The QR payload for someone to scan in person to add this device as a verified contact. */
     fun myContactCard(): ContactCard = ContactCard.of(identity, displayName())
 
