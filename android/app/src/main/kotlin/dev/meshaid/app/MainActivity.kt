@@ -502,7 +502,7 @@ private fun ChatsList(
         item { MapRow(fixCount = fixCount, onClick = onOpenMap) }
         if (friendRows.isNotEmpty()) {
             item { SectionLabel("FRIENDS") }
-            items(friendRows) { (row, lastMsg) ->
+items(friendRows, key = { (row, _) -> row.first }) { (row, lastMsg) ->
                 val (id, name, live) = row
                 FriendRow(
                     id, name, live, lastMsg, self, now,
